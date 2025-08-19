@@ -1,0 +1,25 @@
+# configs/base.yaml
+defaults:
+  - _self_
+
+# データセット
+data_root : '/home/dcuser/data/ActiveSeisField/'
+train_field_list: train_field_list.txt
+file_size: null
+
+# パス関連
+suffix: 'addnoise3'
+
+# モデル関連（共通部分）
+backbone: caformer_b36.sail_in22k_ft_in1k  #   swin_base_patch4_window7_224 hgnetv2_b2.ssld_stage2_ft_in1k
+drop_path_rate: 0
+
+# 一般設定
+num_workers: 16
+k: 1.0
+
+use_ema: True
+use_amp: True
+ema_decay: 0.99
+
+device: 'cuda:1'

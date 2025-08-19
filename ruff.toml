@@ -1,0 +1,41 @@
+target-version = "py310"
+fix = true
+
+[lint]
+select = ["ALL"]
+ignore = [
+    "COM812",
+    "COM819",
+    "D206",
+    "D300",
+    "E111",
+    "E114",
+    "E117",
+    "E741",
+    "E742",
+    "E743",
+    "ERA001",
+    "G004",
+    "ISC001",
+    "ISC002",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "T20",
+    "W191",
+]
+# COM812, COM819, D206, D300, E111, E114, E117,
+# ISC001, ISC002, Q000, Q001, Q002, Q003, W191: conflict formatter
+# #ANN: annotations
+# #D: pydocstyle
+# E741, E742, E743: Ambiguous name
+# ERA001: commented-out-code
+# #EXE: executable
+# G004: logging-f-string
+# T20: print, p-print
+
+[format]
+docstring-code-format = true
+indent-style = "tab"
+quote-style = "single"

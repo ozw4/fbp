@@ -1,0 +1,43 @@
+services:
+  fbp:
+    image: nvidia-pytorch:24.09
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: develop
+      args:
+        HTTP_PROXY: ${HTTP_PROXY}
+        HTTPS_PROXY: ${HTTPS_PROXY}
+        NO_PROXY: ${NO_PROXY}
+        USERNAME: dcuser
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+      NO_PROXY: ${NO_PROXY}
+      NVIDIA_VISIBLE_DEVICES: all
+    logging:
+      driver: local
+      options:
+        max-size: 3m
+        max-file: '3'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - type: bind
+        source: /dev/shm
+        target: /dev/shm
+      - type: bind
+        source: ../
+        target: /workspace
+      - type: bind
+        source: /home/aiuser4/Desktop/data
+        target: /home/dcuser/data
+    stdin_open: true
+    tty: true

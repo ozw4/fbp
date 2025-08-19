@@ -1,0 +1,42 @@
+# configs/train.yaml
+defaults:
+  - base
+
+# 学習設定
+batch_size: 16
+steps_per_epoch: 2000
+lr: 1e-4
+lr_milestones: []
+momentum: 0.9
+weight_decay: 0.0001
+lr_gamma: 0.2
+lr_warmup_epochs: 3
+val_steps: 50
+epoch_block: 20
+num_block: 50
+print_freq: 100
+resume: null
+start_epoch: 0
+flip: True
+
+# 損失係数
+lambda_g1v: 1.0
+lambda_g2v: 1.0
+
+# 分散学習
+distributed: False
+local_rank: 0
+sync_bn: True
+world_size: 2
+dist_url: env://
+
+# ログ
+tensorboard: true
+
+snr:
+  pre_len: 400
+  post_len: 400
+  guard: 12
+  mask_ratio_for_eval: 0.5
+  seed: 12345
+  passes_batch: 4
