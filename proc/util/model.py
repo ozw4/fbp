@@ -4,83 +4,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-############################
-# 汎用 Stem Adapter ユーティリティ
-############################
-
-
-def _find_first_conv(module: nn.Module):
-        """ツリーを先頭から走査して最初の Conv2d を返す（見つからなければ None）"""
-        for m in module.modules():
-                if isinstance(m, nn.Conv2d):
-                        return m
-        return None
-
-
-class PrePad2d(nn.Module):
-        """前段に挿入する可変パディング。mode='reflect' or 'zero'"""
-
-        def __init__(self, pad=(0, 0, 0, 0), mode='reflect'):
-                super().__init__()
-                self.pad = pad
-                if pad == (0, 0, 0, 0):
-                        self.op = nn.Identity()
-                elif mode == 'reflect':
-                        self.op = nn.ReflectionPad2d(pad)
-                elif mode == 'zero':
-                        # ZeroPad は Conv の padding で代替できるので Identity でも可
-                        self.op = nn.ZeroPad2d(pad)
-                else:
-                        raise ValueError("mode must be 'reflect' or 'zero'")
-
-        def forward(self, x):
-                return self.op(x)
-
-
-def adapt_stem(
-        backbone: nn.Module,
-        stride: tuple[int, int] | None = None,
-        padding: tuple[int, int] | None = None,
-        prepad: tuple[int, int, int, int] = (0, 0, 0, 0),
-        prepad_mode: str = 'reflect',
-):
-        """任意の timm バックボーンに対して、先頭 Conv の stride/padding と前段パディングを注入する。
-        - `stride` / `padding` を None にすると既定値のまま（変更しない）
-        - `prepad` は (left, right, top, bottom)
-        - `stem` が無いモデルでも先頭 Conv を自動検出して変更
-        """
-        # 1) 先頭 Conv を探す（優先: stem配下 → 全体）
-        conv_target = None
-        if hasattr(backbone, 'stem'):
-                conv_target = _find_first_conv(backbone.stem)
-        if conv_target is None:
-                conv_target = _find_first_conv(backbone)
-        if conv_target is None:
-                raise RuntimeError('No Conv2d found in backbone to adapt.')
-
-        # 2) stride/padding の上書き（指定があれば）
-        if stride is not None:
-                conv_target.stride = stride
-        if padding is not None:
-                conv_target.padding = padding
-
-        # 3) 前段パディングの挿入
-        if prepad != (0, 0, 0, 0):
-                pad_block = PrePad2d(prepad, mode=prepad_mode)
-                if hasattr(backbone, 'stem') and isinstance(backbone.stem, nn.Module):
-                        backbone.stem = nn.Sequential(pad_block, backbone.stem)
-                else:
-                        # stem が無い場合は、モデル全体の先頭に差し込むためにラップ
-                        backbone.forward = _wrap_with_prepad(backbone.forward, pad_block)
-
-
-def _wrap_with_prepad(forward_fn, pad_block):
-        def new_forward(x, *args, **kwargs):
-                x = pad_block(x)
-                return forward_fn(x, *args, **kwargs)
-
-        return new_forward
-
 
 def adapt_stage_strides(backbone: nn.Module, stage_strides: list[tuple[int, int]]):
         """Apply anisotropic strides per stage to the backbone.
@@ -310,17 +233,17 @@ class SegmentationHead2d(nn.Module):
 
 
 class NetAE(nn.Module):
+        """timm バックボーン + U-Net デコーダの汎用ネットワーク。
+
+        SAME 相当の境界処理はデータローダ側でパディングすること。
+        """
+
         def __init__(
                 self,
                 backbone: str,
                 in_chans: int = 1,
                 out_chans: int = 1,
                 pretrained: bool = True,
-                # stem 調整（任意）
-                stem_stride: tuple[int, int] | None = None,  # 例: (4,1)
-                stem_padding: tuple[int, int] | None = None,  # 例: (2,3)
-                prepad: tuple[int, int, int, int] = (0, 0, 0, 0),  # 例: (1,1,20,20)
-                prepad_mode: str = 'reflect',
                 stage_strides: list[tuple[int, int]] | None = None,
                 # decoder オプション
                 decoder_channels: tuple = (256, 128, 64, 32),
@@ -337,14 +260,6 @@ class NetAE(nn.Module):
                         pretrained=pretrained,
                         features_only=True,
                         drop_path_rate=0.0,
-                )
-                # 可搬な stem 調整
-                adapt_stem(
-                        self.backbone,
-                        stride=stem_stride,
-                        padding=stem_padding,
-                        prepad=prepad,
-                        prepad_mode=prepad_mode,
                 )
                 if stage_strides is not None:
                         adapt_stage_strides(self.backbone, stage_strides)
@@ -403,19 +318,16 @@ if __name__ == '__main__':
         # ダミー入力：バッチサイズ1、チャンネル数1、高さ128、幅6016
         dummy_input = torch.randn(1, 1, 128, 6016)
 
-        # モデルの初期化（例: ConvNeXt-Tiny）
         model = NetAE(
                 backbone='caformer_b36.sail_in22k_ft_in1k',
                 pretrained=False,
-                stage_strides=[(1, 4), (2, 2), (2, 1), (2, 2)],
+                stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
         )
-        max_red = max(fi['reduction'] for fi in model.backbone.feature_info)
-        print('Max reduction factor:', max_red)
-        # 推論モード
         model.eval()
 
-        # 順伝播テスト
         with torch.no_grad():
+                feats = model.backbone(dummy_input)[::-1]
+                for i, f in enumerate(feats):
+                        print(f'Encoder feature {i} shape:', f.shape)
                 output = model(dummy_input)
                 print('Output shape:', output.shape)
-                print('Output min:', output.min().item(), 'max:', output.max().item())
