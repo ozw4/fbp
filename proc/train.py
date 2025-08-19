@@ -1,3 +1,4 @@
+# %%
 import copy
 import datetime
 import os
@@ -16,9 +17,6 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard.writer import SummaryWriter
-from utils import WarmupCosineScheduler, set_seed
-from vis import visualize_pair_quartet
-
 from util import (
 	MaskedSegyGather,
 	cover_all_traces_predict_chunked,
@@ -30,6 +28,8 @@ from util import (
 	val_one_epoch_snr,
 	worker_init_fn,
 )
+from utils import WarmupCosineScheduler, set_seed
+from vis import visualize_pair_quartet
 
 SEED = 42
 set_seed(SEED)
@@ -143,7 +143,7 @@ train_loader = DataLoader(
 	num_workers=cfg.num_workers,  # ここもcfgから
 	pin_memory=True,
 	collate_fn=segy_collate,  # ★必須
-		worker_init_fn=worker_init_fn,
+	worker_init_fn=worker_init_fn,
 	drop_last=True,
 	generator=g,
 )
@@ -163,7 +163,7 @@ val_loader = DataLoader(
 	pin_memory=True,
 	collate_fn=segy_collate,
 	drop_last=False,
-		worker_init_fn=worker_init_fn,
+	worker_init_fn=worker_init_fn,
 )
 
 synthe_noise_segy = (
