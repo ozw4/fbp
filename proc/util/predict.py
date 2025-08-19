@@ -5,6 +5,8 @@ from torch.amp.autocast_mode import autocast
 
 __all__ = ['cover_all_traces_predict', 'cover_all_traces_predict_chunked']
 
+
+@torch.no_grad()
 def cover_all_traces_predict(
 	model: torch.nn.Module,
 	x: torch.Tensor,
@@ -39,7 +41,10 @@ def cover_all_traces_predict(
 					gk = torch.Generator(device='cpu').manual_seed(
 						(seed + b) * 100003 + s * 1009 + int(idxs[0])
 					)
-					n = torch.randn((1, 1, len(idxs), W), generator=gk, device='cpu') * noise_std
+					n = (
+						torch.randn((1, 1, len(idxs), W), generator=gk, device='cpu')
+						* noise_std
+					)
 				else:
 					n = torch.randn((1, 1, len(idxs), W), device='cpu') * noise_std
 				n = n.to(device=device, non_blocking=True)
@@ -54,6 +59,8 @@ def cover_all_traces_predict(
 				y_full[b, :, idxs.to(device), :] = yb[k, :, idxs.to(device), :]
 	return y_full
 
+
+@torch.no_grad()
 def cover_all_traces_predict_chunked(
 	model: torch.nn.Module,
 	x: torch.Tensor,
@@ -93,10 +100,14 @@ def cover_all_traces_predict_chunked(
 		left_ov = min(overlap, s)
 		right_ov = min(overlap, H - e)
 		if left_ov > 0:
-			ramp = torch.linspace(0, 1, steps=left_ov, device=device, dtype=x.dtype).view(1, 1, -1, 1)
+			ramp = torch.linspace(
+				0, 1, steps=left_ov, device=device, dtype=x.dtype
+			).view(1, 1, -1, 1)
 			w[:, :, :left_ov, :] = ramp
 		if right_ov > 0:
-			ramp = torch.linspace(1, 0, steps=right_ov, device=device, dtype=x.dtype).view(1, 1, -1, 1)
+			ramp = torch.linspace(
+				1, 0, steps=right_ov, device=device, dtype=x.dtype
+			).view(1, 1, -1, 1)
 			w[:, :, -right_ov:, :] = ramp
 		y_acc[:, :, s:e, :] += yt * w
 		w_acc[:, :, s:e, :] += w

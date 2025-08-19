@@ -247,6 +247,7 @@ start_time = time.time()
 best_mse = checkpoint.get('best_mse', float('inf')) if cfg.resume else float('inf')
 best_snr = checkpoint.get('best_snr', float('-inf')) if cfg.resume else float('-inf')
 chp = 1
+step = checkpoint.get('step', 0) if cfg.resume else 0
 
 for epoch in range(cfg.start_epoch, epochs):
 	if cfg.distributed:
@@ -266,6 +267,7 @@ for epoch in range(cfg.start_epoch, epochs):
 		scaler=scaler,
 		ema=ema,
 		gradient_accumulation_steps=1,
+		step=step,
 	)
 	eval_model = ema.module if ema else model
 

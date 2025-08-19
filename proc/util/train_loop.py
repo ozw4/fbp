@@ -23,9 +23,9 @@ def train_one_epoch(
 	ema=None,
 	gradient_accumulation_steps=1,
 	max_shift=5,
+	step: int = 0,
 ):
 	"""Run one training epoch."""
-	global step
 	model.train()
 	metric_logger = utils.MetricLogger(delimiter='  ')
 	metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
@@ -73,7 +73,7 @@ def train_one_epoch(
 			)
 			if writer:
 				writer.add_scalar('loss', accum_loss, step)
-				writer.add_scalar('lr', optimizer.param_groups[0]['lr'], i)
+				writer.add_scalar('lr', optimizer.param_groups[0]['lr'], step)
 			step += 1
 			lr_scheduler.step()
 			accum_loss = 0.0
