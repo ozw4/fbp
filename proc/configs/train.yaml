@@ -1,6 +1,7 @@
 # configs/train.yaml
 defaults:
   - base
+  - _self_
 
 # 学習設定
 batch_size: 16
@@ -40,3 +41,4 @@ snr:
   mask_ratio_for_eval: 0.5
   seed: 12345
   passes_batch: 4
+

@@ -7,6 +7,7 @@ from torch.amp.autocast_mode import autocast
 
 __all__ = ['criterion', 'train_one_epoch']
 
+
 def train_one_epoch(
 	model,
 	criterion,
@@ -28,7 +29,9 @@ def train_one_epoch(
 	model.train()
 	metric_logger = utils.MetricLogger(delimiter='  ')
 	metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
-	metric_logger.add_meter('samples/s', utils.SmoothedValue(window_size=10, fmt='{value:.3f}'))
+	metric_logger.add_meter(
+		'samples/s', utils.SmoothedValue(window_size=10, fmt='{value:.3f}')
+	)
 	header = f'Epoch: [{epoch}]'
 	optimizer.zero_grad()
 	accum_loss = 0.0
@@ -38,10 +41,14 @@ def train_one_epoch(
 		x_masked = x_masked.to(device, non_blocking=True)
 		x_orig = x_orig.to(device, non_blocking=True)
 		mask_2d = mask_2d.to(device, non_blocking=True)
-		device_type = 'cuda' if torch.cuda.is_available() and 'cuda' in str(device) else 'cpu'
+		device_type = (
+			'cuda' if torch.cuda.is_available() and 'cuda' in str(device) else 'cpu'
+		)
 		with autocast(device_type=device_type, enabled=use_amp):
 			pred = model(x_masked)
-			total_loss = criterion(pred, x_orig, mask=mask_2d, max_shift=max_shift, reduction='mean')
+			total_loss = criterion(
+				pred, x_orig, mask=mask_2d, max_shift=max_shift, reduction='mean'
+			)
 			main_loss = total_loss / gradient_accumulation_steps
 		if scaler:
 			scaler.scale(main_loss).backward()
@@ -66,10 +73,11 @@ def train_one_epoch(
 			)
 			if writer:
 				writer.add_scalar('loss', accum_loss, step)
-				writer.add_scalar('lr', optimizer.param_groups[0]['lr'], step)
+				writer.add_scalar('lr', optimizer.param_groups[0]['lr'], i)
 			step += 1
 			lr_scheduler.step()
 			accum_loss = 0.0
+
 
 def criterion(
 	pred: torch.Tensor,

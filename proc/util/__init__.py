@@ -11,7 +11,7 @@ from .data_io import _read_gather_by_indices, load_synth_pair
 from .dataset import MaskedSegyGather
 from .eval import eval_synthe, val_one_epoch_snr
 from .predict import cover_all_traces_predict, cover_all_traces_predict_chunked
-from .random import worker_init_fn
+from .rng_util import worker_init_fn
 from .train_loop import criterion, train_one_epoch
 
 __all__ = [
