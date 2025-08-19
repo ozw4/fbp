@@ -1,10 +1,11 @@
 # configs/train.yaml
 defaults:
   - base
+  - _self_
 
 # 学習設定
 batch_size: 16
-steps_per_epoch: 2000
+steps_per_epoch: 100
 lr: 1e-4
 lr_milestones: []
 momentum: 0.9
@@ -40,3 +41,4 @@ snr:
   mask_ratio_for_eval: 0.5
   seed: 12345
   passes_batch: 4
+
