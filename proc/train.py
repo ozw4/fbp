@@ -98,6 +98,7 @@ n_val_item = (
 	else cfg.val_steps * cfg.batch_size * cfg.world_size
 )
 val_items = [val_src[i] for i in range(n_val_item)]
+val_src.close()
 
 
 class FrozenValDataset(Dataset):
@@ -373,5 +374,6 @@ for epoch in range(cfg.start_epoch, epochs):
 total_time = time.time() - start_time
 total_time_str = str(datetime.timedelta(seconds=int(total_time)))
 print(f'Training time {total_time_str}')
+train_dataset.close()
 
 # %%
