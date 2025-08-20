@@ -11,7 +11,7 @@ import torch
 import utils
 from ema import ModelEMA
 from hydra import compose, initialize
-from model import NetAE
+from model import NetAE, adjust_first_conv_padding
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
@@ -182,9 +182,16 @@ synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
 )
 
 model = NetAE(
-	backbone=cfg.backbone,
+	backbone='caformer_b36.sail_in22k_ft_in1k',
 	pretrained=True,
+	stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
+	pre_stages=2,
+	pre_stage_strides=(
+		(1, 1),
+		(1, 2),
+	),
 ).to(device)
+adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
 if cfg.distributed and cfg.sync_bn:
 	model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -201,7 +208,6 @@ optimizer = torch.optim.AdamW(
 )
 
 warmup_iters = cfg.lr_warmup_epochs * len(train_loader)
-
 
 lr_scheduler = WarmupCosineScheduler(
 	optimizer=optimizer,
