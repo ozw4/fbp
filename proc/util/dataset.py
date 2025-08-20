@@ -87,6 +87,21 @@ class MaskedSegyGather(Dataset):
 				)
 			)
 
+	def close(self) -> None:
+		"""Close all opened SEG-Y file objects."""
+		for info in self.file_infos:
+			segy_obj = info.get('segy_obj')
+			if segy_obj is not None:
+				try:
+					segy_obj.close()
+				except Exception:
+					pass
+		self.file_infos.clear()
+
+	def __del__(self) -> None:
+		self.close()
+
+
 	def _fit_time_len(self, x: np.ndarray, start: int | None = None) -> tuple[np.ndarray, int]:
 		T, target = x.shape[1], self.target_len
 		if start is None:
