@@ -5,7 +5,7 @@ defaults:
 
 # 学習設定
 batch_size: 16
-steps_per_epoch: 100
+steps_per_epoch: 2000
 lr: 1e-4
 lr_milestones: []
 momentum: 0.9
