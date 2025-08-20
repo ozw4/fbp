@@ -39,7 +39,11 @@ snr:
   pre_len: 400
   post_len: 400
   guard: 12
-  mask_ratio_for_eval: 0.5
   seed: 12345
   passes_batch: 4
+  mask_noise_mode: ${dataset.mask_mode}
+  noise_std: ${dataset.mask_noise_std}
 
+dataset:
+  mask_mode: add         # replace | add
+  mask_noise_std: 3.0

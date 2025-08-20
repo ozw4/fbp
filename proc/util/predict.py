@@ -14,7 +14,7 @@ def cover_all_traces_predict(
 	*,
 	mask_ratio: float = 0.5,
 	noise_std: float = 1.0,
-	mask_noise_mode: Literal["replace", "add"] = "replace",
+	mask_noise_mode: Literal['replace', 'add'] = 'replace',
 	use_amp: bool = True,
 	device=None,
 	seed: int | None = 12345,
@@ -56,12 +56,12 @@ def cover_all_traces_predict(
 					n = torch.randn((1, 1, len(idxs), W), device='cpu') * noise_std
 				n = n.to(device=device, non_blocking=True)
 				idxs_dev = idxs.to(device)
-				if mask_noise_mode == "replace":
+				if mask_noise_mode == 'replace':
 					xm[:, :, idxs_dev, :] = n
-				elif mask_noise_mode == "add":
+				elif mask_noise_mode == 'add':
 					xm[:, :, idxs_dev, :] += n
 				else:
-					raise ValueError(f"Invalid mask_noise_mode: {mask_noise_mode}")
+					raise ValueError(f'Invalid mask_noise_mode: {mask_noise_mode}')
 				xmb.append(xm)
 			xmb = torch.cat(xmb, dim=0)
 			dev_type = 'cuda' if xmb.is_cuda else 'cpu'
@@ -81,7 +81,7 @@ def cover_all_traces_predict_chunked(
 	overlap: int = 32,
 	mask_ratio: float = 0.5,
 	noise_std: float = 1.0,
-	mask_noise_mode: Literal["replace", "add"] = "replace",
+	mask_noise_mode: Literal['replace', 'add'] = 'replace',
 	use_amp: bool = True,
 	device=None,
 	seed: int = 12345,

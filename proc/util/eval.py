@@ -8,6 +8,7 @@ from .predict import cover_all_traces_predict
 
 __all__ = ['eval_synthe', 'val_one_epoch_snr']
 
+
 def val_one_epoch_snr(
 	model,
 	val_loader,
@@ -32,11 +33,12 @@ def val_one_epoch_snr(
 			model,
 			x_orig,
 			mask_ratio=cfg_snr.mask_ratio_for_eval,
-			noise_std=1.0,
+			noise_std=getattr(cfg_snr, 'noise_std', 1.0),
 			use_amp=True,
 			device=device,
 			seed=cfg_snr.seed,
 			passes_batch=cfg_snr.passes_batch,
+			mask_noise_mode=getattr(cfg_snr, 'mask_noise_mode', 'replace'),
 		)
 		cache = prepare_fb_windows(
 			fb_idx,
@@ -71,6 +73,7 @@ def val_one_epoch_snr(
 		'snr_improve_db': float(np.median(all_imp)),
 		'valid_frac': float(np.mean(all_vf)),
 	}
+
 
 def eval_synthe(x_clean, pred, device=None):
 	"""Compute MSE, MAE and PSNR for synthetic data."""

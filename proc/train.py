@@ -79,6 +79,8 @@ train_dataset = MaskedSegyGather(
 	augment_freq_width=(0.12, 0.35),
 	augment_freq_roll=0.02,
 	augment_freq_restandardize=True,
+	mask_mode=cfg.dataset.mask_mode,
+	mask_noise_std=cfg.dataset.mask_noise_std,
 )
 valid_dataset = MaskedSegyGather(
 	segy_files,
@@ -88,6 +90,8 @@ valid_dataset = MaskedSegyGather(
 	augment_time_prob=0.0,
 	augment_space_prob=0.0,
 	augment_freq_prob=0.0,
+	mask_mode=cfg.dataset.mask_mode,
+	mask_noise_std=cfg.dataset.mask_noise_std,
 )
 val_src = copy.copy(valid_dataset)  # file_infos を共有
 val_src.flip = False  # ここだけ無反転で取りたい場合
@@ -291,7 +295,12 @@ for epoch in range(cfg.start_epoch, epochs):
 	)
 
 	# 合成データ推論 & 指標
-	pred = cover_all_traces_predict_chunked(eval_model, synthe_noisy.to(device))
+	pred = cover_all_traces_predict_chunked(
+		eval_model,
+		synthe_noisy.to(device),
+		mask_noise_mode=cfg.dataset.mask_noise_mode,
+		noise_std=cfg.dataset.mask_noise_std,
+	)
 	synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
 	for i in range(len(synthe_noisy)):
 		visualize_pair_quartet(
@@ -374,6 +383,5 @@ for epoch in range(cfg.start_epoch, epochs):
 total_time = time.time() - start_time
 total_time_str = str(datetime.timedelta(seconds=int(total_time)))
 print(f'Training time {total_time_str}')
-train_dataset.close()
 
 # %%
