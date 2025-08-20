@@ -10,6 +10,7 @@ def adjust_first_conv_padding(backbone: nn.Module, padding=(1, 1)):
 	for m in backbone.modules():
 		if isinstance(m, nn.Conv2d):
 			m.padding = padding
+
 			print(f'Adjusted first Conv2d padding to {padding}')
 			break
 
@@ -246,6 +247,7 @@ class NetAE(nn.Module):
 
 	timm バックボーンの前に Conv+BN+ReLU の前段ステージを任意段数挿入できる。
 	SAME などの動的パディングはモデル外（データローダ側）で行うこと。
+
 	"""
 
 	def __init__(
@@ -264,6 +266,7 @@ class NetAE(nn.Module):
 		pre_stage_kernels: tuple[int, ...] | None = None,
 		pre_stage_channels: tuple[int, ...] | None = None,
 		pre_stage_use_bn: bool = True,
+
 		# decoder オプション
 		decoder_channels: tuple = (256, 128, 64, 32),
 		decoder_scales: tuple = (2, 2, 2, 2),
@@ -272,6 +275,7 @@ class NetAE(nn.Module):
 		intermediate_conv: bool = True,
 	):
 		super().__init__()
+
 		# 前段のダウンサンプル
 		self.pre_down = nn.ModuleList()
 		c_in = in_chans
@@ -295,6 +299,7 @@ class NetAE(nn.Module):
 		self.backbone = timm.create_model(
 			backbone,
 			in_chans=pre_out_ch,
+
 			pretrained=pretrained,
 			features_only=True,
 			drop_path_rate=0.0,
@@ -357,6 +362,7 @@ class NetAE(nn.Module):
 				print(x.shape)
 
 		feats = self.backbone(x)[::-1]
+
 		top = feats[0]
 		for b in self.extra_down:
 			top = b(top)
@@ -366,22 +372,27 @@ class NetAE(nn.Module):
 	@torch.inference_mode()
 	def _proc_flip(self, x_in):
 		x_flip = torch.flip(x_in, dims=[-2])
+
 		feats = self._encode(x_flip)
+
 		dec = self.decoder(feats)
 		y = self.seg_head(dec[-1])
 		y = torch.flip(y, dims=[-2])
 		return y
 
 	def forward(self, x):
+
 		"""入力: x=(B,C,H,W)
 		出力: y=(B,out_chans,H,W)  ※入力サイズに合わせて補間して返す
 		"""
 		H, W = x.shape[-2:]
 		feats = self._encode(x)
+
 		if getattr(self, 'print_shapes', False):
 			for i, f in enumerate(feats):
 				print(f'Encoder feature {i} shape:', f.shape)
 		dec = self.decoder(feats)
+
 		y = self.seg_head(dec[-1])  # 低解像度 → 後段で補間
 		y = F.interpolate(y, size=(H, W), mode='bilinear', align_corners=False)
 
@@ -389,6 +400,7 @@ class NetAE(nn.Module):
 			return y
 
 		# eval 時のみ簡易 TTA（左右反転）
+
 		p1 = self._proc_flip(x)
 		p1 = F.interpolate(p1, size=(H, W), mode='bilinear', align_corners=False)
 		return torch.quantile(torch.stack([y, p1]), q=0.5, dim=0)
@@ -415,6 +427,7 @@ if __name__ == '__main__':
 	adjust_first_conv_padding(model.backbone, padding=(3, 3))
 	model.print_shapes = True
 	model.eval()
+
 	with torch.no_grad():
 		output = model(dummy_input)
 		print('Output shape:', output.shape)

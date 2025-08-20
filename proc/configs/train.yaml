@@ -4,6 +4,7 @@ defaults:
   - _self_
 
 # 学習設定
+
 batch_size: 16
 steps_per_epoch: 2000
 lr: 1e-4

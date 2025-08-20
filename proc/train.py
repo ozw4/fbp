@@ -182,6 +182,7 @@ synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
 )
 
 model = NetAE(
+
 	backbone='caformer_b36.sail_in22k_ft_in1k',
 	pretrained=True,
 	stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
@@ -191,6 +192,7 @@ model = NetAE(
 		(1, 2),
 	),
 ).to(device)
+adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
 adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
@@ -209,7 +211,6 @@ optimizer = torch.optim.AdamW(
 )
 
 warmup_iters = cfg.lr_warmup_epochs * len(train_loader)
-
 
 lr_scheduler = WarmupCosineScheduler(
 	optimizer=optimizer,
@@ -274,7 +275,7 @@ for epoch in range(cfg.start_epoch, epochs):
 		use_amp=use_amp,
 		scaler=scaler,
 		ema=ema,
-		gradient_accumulation_steps=1,
+		gradient_accumulation_steps=2,
 		step=step,
 	)
 	eval_model = ema.module if ema else model
