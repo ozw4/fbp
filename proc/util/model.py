@@ -178,8 +178,6 @@ class DecoderBlock2d(nn.Module):
 
 
 class UnetDecoder2d(nn.Module):
-	"""U-Net decoder supporting anisotropic upsampling."""
-
 	def __init__(
 		self,
 		encoder_channels: tuple[int],
@@ -192,13 +190,41 @@ class UnetDecoder2d(nn.Module):
 		upsample_mode: str = 'bilinear',
 	):
 		super().__init__()
-		if len(encoder_channels) == 4:
-			decoder_channels = decoder_channels[1:]
+
+		# 期待段数 = encoder_levels - 1
+		need = len(encoder_channels) - 1
+
+		# --- decoder_channels を need に合わせる ---
+		dec = list(decoder_channels)
+		if len(dec) < need:
+			dec += [dec[-1]] * (need - len(dec))  # 末尾を繰り返して延長
+		elif len(dec) > need:
+			dec = dec[:need]  # 余剰をカット
+		decoder_channels = tuple(dec)
 		self.decoder_channels = decoder_channels
+
+		# --- scale_factors も need に合わせる（★これが今回の修正ポイント） ---
+		sf = list(
+			scale_factors
+			if isinstance(scale_factors, (list, tuple))
+			else [scale_factors]
+		)
+		if len(sf) < len(decoder_channels):
+			sf += [sf[-1]] * (len(decoder_channels) - len(sf))
+		elif len(sf) > len(decoder_channels):
+			sf = sf[: len(decoder_channels)]
+		self.scale_factors = tuple(sf)
+
+		# skip_channels 安全化
 		if skip_channels is None:
 			skip_channels = list(encoder_channels[1:]) + [0]
+		if len(skip_channels) < len(decoder_channels):
+			skip_channels += [0] * (len(decoder_channels) - len(skip_channels))
+		else:
+			skip_channels = skip_channels[: len(decoder_channels)]
 
 		in_channels = [encoder_channels[0]] + list(decoder_channels[:-1])
+
 		self.blocks = nn.ModuleList(
 			[
 				DecoderBlock2d(
@@ -209,7 +235,7 @@ class UnetDecoder2d(nn.Module):
 					attention_type,
 					intermediate_conv,
 					upsample_mode,
-					scale_factors[i],
+					self.scale_factors[i],  # ← 調整後を使う
 				)
 				for i, (ic, sc, dc) in enumerate(
 					zip(in_channels, skip_channels, decoder_channels, strict=False)
@@ -266,7 +292,6 @@ class NetAE(nn.Module):
 		pre_stage_kernels: tuple[int, ...] | None = None,
 		pre_stage_channels: tuple[int, ...] | None = None,
 		pre_stage_use_bn: bool = True,
-
 		# decoder オプション
 		decoder_channels: tuple = (256, 128, 64, 32),
 		decoder_scales: tuple = (2, 2, 2, 2),
@@ -278,6 +303,7 @@ class NetAE(nn.Module):
 
 		# 前段のダウンサンプル
 		self.pre_down = nn.ModuleList()
+		self.pre_out_channels = []  # ★追加：各pre段の出力chリスト
 		c_in = in_chans
 		kernels = list(pre_stage_kernels or [])
 		strides = list(pre_stage_strides or [])
@@ -292,14 +318,13 @@ class NetAE(nn.Module):
 				block.append(nn.BatchNorm2d(c_out))
 			block.append(nn.ReLU(inplace=True))
 			self.pre_down.append(nn.Sequential(*block))
+			self.pre_out_channels.append(c_out)  # ★控える
 			c_in = c_out
 		pre_out_ch = c_in
-
 		# Encoder (timm features_only)
 		self.backbone = timm.create_model(
 			backbone,
 			in_chans=pre_out_ch,
-
 			pretrained=pretrained,
 			features_only=True,
 			drop_path_rate=0.0,
@@ -309,24 +334,25 @@ class NetAE(nn.Module):
 
 		# 追加のダウンサンプル段
 		self.extra_down = nn.ModuleList()
-		ecs = [fi['num_chs'] for fi in self.backbone.feature_info][::-1]
+		# 1) backbone のチャンネル列（深い→浅い）
+		ecs_base = [fi['num_chs'] for fi in self.backbone.feature_info][::-1]
+
+		# 2) extra_down を作る（最深の上に積む）
+		self.extra_down = nn.ModuleList()
+		c_in = ecs_base[0] if ecs_base else 0
+		extra_out_channels: list[int] = []
+
 		extra_strides = list(extra_stage_strides or [])
 		if len(extra_strides) < extra_stages:
 			extra_strides += [(2, 2)] * (extra_stages - len(extra_strides))
 		extra_channels = list(extra_stage_channels or [])
-		c_in = ecs[0] if ecs else 0
-		extra_out_channels: list[int] = []
+
 		for i in range(extra_stages):
 			stride = extra_strides[i]
 			c_out = extra_channels[i] if i < len(extra_channels) else c_in
 			block = [
 				nn.Conv2d(
-					c_in,
-					c_out,
-					kernel_size=3,
-					stride=stride,
-					padding=1,
-					bias=False,
+					c_in, c_out, kernel_size=3, stride=stride, padding=1, bias=False
 				)
 			]
 			if extra_stage_use_bn:
@@ -335,9 +361,13 @@ class NetAE(nn.Module):
 			self.extra_down.append(nn.Sequential(*block))
 			extra_out_channels.append(c_out)
 			c_in = c_out
-		if extra_out_channels:
-			ecs = list(reversed(extra_out_channels)) + ecs
 
+		# 3) ecs を最終確定：extra↓ を先頭に、pre↓ を末尾に
+		ecs = (
+			list(reversed(extra_out_channels)) if extra_out_channels else []
+		) + ecs_base
+		if self.pre_out_channels:
+			ecs = ecs + self.pre_out_channels
 		# Decoder
 		self.decoder = UnetDecoder2d(
 			encoder_channels=ecs,
@@ -356,17 +386,26 @@ class NetAE(nn.Module):
 		self.use_tta = True
 
 	def _encode(self, x) -> list[torch.Tensor]:
+		# ★各pre段の出力を控える
+		pre_feats = []
 		for b in self.pre_down:
 			x = b(x)
+			pre_feats.append(x)
 			if getattr(self, 'print_shapes', False):
-				print(x.shape)
+				print(f'[pre] {tuple(x.shape)}')
 
+		# backbone → deepest-first
 		feats = self.backbone(x)[::-1]
 
+		# extra_down（最深側を前に積む）
 		top = feats[0]
 		for b in self.extra_down:
 			top = b(top)
 			feats = [top] + feats
+
+		# ★pre_down 出力を浅い側（末尾）に積む
+		feats = feats + pre_feats
+
 		return feats
 
 	@torch.inference_mode()
@@ -381,7 +420,6 @@ class NetAE(nn.Module):
 		return y
 
 	def forward(self, x):
-
 		"""入力: x=(B,C,H,W)
 		出力: y=(B,out_chans,H,W)  ※入力サイズに合わせて補間して返す
 		"""
