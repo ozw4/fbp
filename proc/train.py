@@ -259,7 +259,7 @@ for epoch in range(cfg.start_epoch, epochs):
 	if cfg.distributed:
 		train_sampler.set_epoch(epoch)
 
-	train_one_epoch(
+	step = train_one_epoch(
 		model=model,
 		criterion=criterion,
 		optimizer=optimizer,

@@ -78,6 +78,8 @@ def train_one_epoch(
 			lr_scheduler.step()
 			accum_loss = 0.0
 
+	return step
+
 
 def criterion(
 	pred: torch.Tensor,
