@@ -182,12 +182,18 @@ synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
 )
 
 model = NetAE(
-	backbone='caformer_s18.sail_in1k',
-	pretrained=False,
-	stage_strides=[(1, 1), (1, 2), (2, 4), (2, 2)],
-	extra_stages=2,
-	extra_stage_strides=((2, 4), (2, 2)),
+
+	backbone='caformer_b36.sail_in22k_ft_in1k',
+	pretrained=True,
+	stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
+	pre_stages=2,
+	pre_stage_strides=(
+		(1, 1),
+		(1, 2),
+	),
 ).to(device)
+adjust_first_conv_padding(model.backbone, padding=(3, 3))
+
 adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
 if cfg.distributed and cfg.sync_bn:

@@ -10,7 +10,8 @@ def adjust_first_conv_padding(backbone: nn.Module, padding=(1, 1)):
 	for m in backbone.modules():
 		if isinstance(m, nn.Conv2d):
 			m.padding = padding
-			print(f'Adjusting first Conv2d padding to {padding}')
+
+			print(f'Adjusted first Conv2d padding to {padding}')
 			break
 
 
@@ -244,7 +245,9 @@ class SegmentationHead2d(nn.Module):
 class NetAE(nn.Module):
 	"""timm バックボーン + U-Net デコーダの汎用ネットワーク。
 
-	SAME 相当の境界処理はデータローダ側でパディングすること。
+	timm バックボーンの前に Conv+BN+ReLU の前段ステージを任意段数挿入できる。
+	SAME などの動的パディングはモデル外（データローダ側）で行うこと。
+
 	"""
 
 	def __init__(
@@ -258,6 +261,12 @@ class NetAE(nn.Module):
 		extra_stage_strides: tuple[tuple[int, int], ...] | None = None,
 		extra_stage_channels: tuple[int, ...] | None = None,
 		extra_stage_use_bn: bool = True,
+		pre_stages: int = 0,
+		pre_stage_strides: tuple[tuple[int, int], ...] | None = None,
+		pre_stage_kernels: tuple[int, ...] | None = None,
+		pre_stage_channels: tuple[int, ...] | None = None,
+		pre_stage_use_bn: bool = True,
+
 		# decoder オプション
 		decoder_channels: tuple = (256, 128, 64, 32),
 		decoder_scales: tuple = (2, 2, 2, 2),
@@ -266,10 +275,31 @@ class NetAE(nn.Module):
 		intermediate_conv: bool = True,
 	):
 		super().__init__()
+
+		# 前段のダウンサンプル
+		self.pre_down = nn.ModuleList()
+		c_in = in_chans
+		kernels = list(pre_stage_kernels or [])
+		strides = list(pre_stage_strides or [])
+		channels = list(pre_stage_channels or [])
+		for i in range(pre_stages):
+			k = kernels[i] if i < len(kernels) else 3
+			s = strides[i] if i < len(strides) else (1, 1)
+			p = k // 2
+			c_out = channels[i] if i < len(channels) else c_in
+			block = [nn.Conv2d(c_in, c_out, k, stride=s, padding=p, bias=False)]
+			if pre_stage_use_bn:
+				block.append(nn.BatchNorm2d(c_out))
+			block.append(nn.ReLU(inplace=True))
+			self.pre_down.append(nn.Sequential(*block))
+			c_in = c_out
+		pre_out_ch = c_in
+
 		# Encoder (timm features_only)
 		self.backbone = timm.create_model(
 			backbone,
-			in_chans=in_chans,
+			in_chans=pre_out_ch,
+
 			pretrained=pretrained,
 			features_only=True,
 			drop_path_rate=0.0,
@@ -325,8 +355,14 @@ class NetAE(nn.Module):
 		# 推論時の TTA（flip）を使うか
 		self.use_tta = True
 
-	def _encode(self, x: torch.Tensor) -> list[torch.Tensor]:
-		feats = self.backbone(x)[::-1]  # 最深が先頭
+	def _encode(self, x) -> list[torch.Tensor]:
+		for b in self.pre_down:
+			x = b(x)
+			if getattr(self, 'print_shapes', False):
+				print(x.shape)
+
+		feats = self.backbone(x)[::-1]
+
 		top = feats[0]
 		for b in self.extra_down:
 			top = b(top)
@@ -336,23 +372,35 @@ class NetAE(nn.Module):
 	@torch.inference_mode()
 	def _proc_flip(self, x_in):
 		x_flip = torch.flip(x_in, dims=[-2])
-		feats = self._encode(x_flip)  # ← 修正：extra_down を適用
+
+		feats = self._encode(x_flip)
+
 		dec = self.decoder(feats)
 		y = self.seg_head(dec[-1])
 		y = torch.flip(y, dims=[-2])
 		return y
 
 	def forward(self, x):
+
+		"""入力: x=(B,C,H,W)
+		出力: y=(B,out_chans,H,W)  ※入力サイズに合わせて補間して返す
+		"""
 		H, W = x.shape[-2:]
-		feats = self._encode(x)  # ← 修正：共通関数を使用
+		feats = self._encode(x)
+
 		if getattr(self, 'print_shapes', False):
 			for i, f in enumerate(feats):
 				print(f'Encoder feature {i} shape:', f.shape)
 		dec = self.decoder(feats)
-		y = self.seg_head(dec[-1])
+
+		y = self.seg_head(dec[-1])  # 低解像度 → 後段で補間
 		y = F.interpolate(y, size=(H, W), mode='bilinear', align_corners=False)
+
 		if self.training or not self.use_tta:
 			return y
+
+		# eval 時のみ簡易 TTA（左右反転）
+
 		p1 = self._proc_flip(x)
 		p1 = F.interpolate(p1, size=(H, W), mode='bilinear', align_corners=False)
 		return torch.quantile(torch.stack([y, p1]), q=0.5, dim=0)
@@ -361,19 +409,22 @@ class NetAE(nn.Module):
 if __name__ == '__main__':
 	import torch
 
-	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 	# ダミー入力：バッチサイズ1、チャンネル数1、高さ128、幅6016
-	dummy_input = torch.randn(8, 1, 128, 6016).to(device)
+	dummy_input = torch.randn(1, 1, 128, 6016)
+
+	# pre_stages=1 で横方向のみ 1/4 に縮小
 
 	model = NetAE(
 		backbone='caformer_b36.sail_in22k_ft_in1k',
-		pretrained=False,
-		stage_strides=[(1, 1), (1, 2), (2, 4), (2, 2)],
-		extra_stages=2,
-		extra_stage_strides=((2, 4), (2, 2)),
+		pretrained=True,
+		stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
+		pre_stages=2,
+		pre_stage_strides=(
+			(1, 1),
+			(1, 2),
+		),
 	)
 	adjust_first_conv_padding(model.backbone, padding=(3, 3))
-	model = model.to(device)
 	model.print_shapes = True
 	model.eval()
 
