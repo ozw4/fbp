@@ -235,7 +235,8 @@ class SegmentationHead2d(nn.Module):
 class NetAE(nn.Module):
         """timm バックボーン + U-Net デコーダの汎用ネットワーク。
 
-        SAME 相当の境界処理はデータローダ側でパディングすること。
+        timm バックボーンの前に Conv+BN+ReLU の前段ステージを任意段数挿入できる。
+        SAME などの動的パディングはモデル外（データローダ側）で行うこと。
         """
 
         def __init__(
@@ -249,6 +250,11 @@ class NetAE(nn.Module):
                 extra_stage_strides: tuple[tuple[int, int], ...] | None = None,
                 extra_stage_channels: tuple[int, ...] | None = None,
                 extra_stage_use_bn: bool = True,
+                pre_stages: int = 0,
+                pre_stage_strides: tuple[tuple[int, int], ...] | None = None,
+                pre_stage_kernels: tuple[int, ...] | None = None,
+                pre_stage_channels: tuple[int, ...] | None = None,
+                pre_stage_use_bn: bool = True,
                 # decoder オプション
                 decoder_channels: tuple = (256, 128, 64, 32),
                 decoder_scales: tuple = (2, 2, 2, 2),
@@ -257,10 +263,29 @@ class NetAE(nn.Module):
                 intermediate_conv: bool = True,
         ):
                 super().__init__()
+                # 前段のダウンサンプル
+                self.pre_down = nn.ModuleList()
+                c_in = in_chans
+                kernels = list(pre_stage_kernels or [])
+                strides = list(pre_stage_strides or [])
+                channels = list(pre_stage_channels or [])
+                for i in range(pre_stages):
+                        k = kernels[i] if i < len(kernels) else 3
+                        s = strides[i] if i < len(strides) else (1, 1)
+                        p = k // 2
+                        c_out = channels[i] if i < len(channels) else c_in
+                        block = [nn.Conv2d(c_in, c_out, k, stride=s, padding=p, bias=False)]
+                        if pre_stage_use_bn:
+                                block.append(nn.BatchNorm2d(c_out))
+                        block.append(nn.ReLU(inplace=True))
+                        self.pre_down.append(nn.Sequential(*block))
+                        c_in = c_out
+                pre_out_ch = c_in
+
                 # Encoder (timm features_only)
                 self.backbone = timm.create_model(
                         backbone,
-                        in_chans=in_chans,
+                        in_chans=pre_out_ch,
                         pretrained=pretrained,
                         features_only=True,
                         drop_path_rate=0.0,
@@ -316,10 +341,20 @@ class NetAE(nn.Module):
                 # 推論時の TTA（flip）を使うか
                 self.use_tta = True
 
+        def _encode(self, x) -> list[torch.Tensor]:
+                for b in self.pre_down:
+                        x = b(x)
+                feats = self.backbone(x)[::-1]
+                top = feats[0]
+                for b in self.extra_down:
+                        top = b(top)
+                        feats = [top] + feats
+                return feats
+
         @torch.inference_mode()
         def _proc_flip(self, x_in):
                 x_flip = torch.flip(x_in, dims=[-2])
-                feats = self.backbone(x_flip)[::-1]
+                feats = self._encode(x_flip)
                 dec = self.decoder(feats)
                 y = self.seg_head(dec[-1])
                 y = torch.flip(y, dims=[-2])
@@ -330,11 +365,7 @@ class NetAE(nn.Module):
                 出力: y=(B,out_chans,H,W)  ※入力サイズに合わせて補間して返す
                 """
                 H, W = x.shape[-2:]
-                feats = self.backbone(x)[::-1]
-                top = feats[0]
-                for b in self.extra_down:
-                        top = b(top)
-                        feats = [top] + feats
+                feats = self._encode(x)
                 if getattr(self, 'print_shapes', False):
                         for i, f in enumerate(feats):
                                 print(f'Encoder feature {i} shape:', f.shape)
@@ -356,17 +387,31 @@ if __name__ == '__main__':
 
         # ダミー入力：バッチサイズ1、チャンネル数1、高さ128、幅6016
         dummy_input = torch.randn(1, 1, 128, 6016)
-
-        model = NetAE(
+        # pre_stages=0（従来通り）
+        model0 = NetAE(
                 backbone='caformer_b36.sail_in22k_ft_in1k',
                 pretrained=False,
                 stage_strides=[(2, 4), (2, 2), (2, 1), (2, 2)],
                 extra_stages=2,
                 extra_stage_strides=((2, 2), (2, 1)),
         )
-        model.print_shapes = True
-        model.eval()
-
+        model0.print_shapes = True
+        model0.eval()
         with torch.no_grad():
-                output = model(dummy_input)
+                output = model0(dummy_input)
+                print('Output shape:', output.shape)
+
+        # pre_stages=1 で横方向のみ 1/4 に縮小
+        model1 = NetAE(
+                backbone='caformer_b36.sail_in22k_ft_in1k',
+                pretrained=False,
+                stage_strides=[(2, 4), (2, 2), (2, 1), (2, 2)],
+                extra_stages=2,
+                extra_stage_strides=((2, 2), (2, 1)),
+                pre_stages=1,
+                pre_stage_strides=((1, 4),),
+        )
+        model1.eval()
+        with torch.no_grad():
+                output = model1(dummy_input)
                 print('Output shape:', output.shape)
