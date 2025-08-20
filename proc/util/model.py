@@ -245,6 +245,10 @@ class NetAE(nn.Module):
                 out_chans: int = 1,
                 pretrained: bool = True,
                 stage_strides: list[tuple[int, int]] | None = None,
+                extra_stages: int = 0,
+                extra_stage_strides: tuple[tuple[int, int], ...] | None = None,
+                extra_stage_channels: tuple[int, ...] | None = None,
+                extra_stage_use_bn: bool = True,
                 # decoder オプション
                 decoder_channels: tuple = (256, 128, 64, 32),
                 decoder_scales: tuple = (2, 2, 2, 2),
@@ -264,8 +268,36 @@ class NetAE(nn.Module):
                 if stage_strides is not None:
                         adapt_stage_strides(self.backbone, stage_strides)
 
-                # エンコーダ出力チャネル（深い順で来るので後で逆順）
+                # 追加のダウンサンプル段
+                self.extra_down = nn.ModuleList()
                 ecs = [fi['num_chs'] for fi in self.backbone.feature_info][::-1]
+                extra_strides = list(extra_stage_strides or [])
+                if len(extra_strides) < extra_stages:
+                        extra_strides += [(2, 2)] * (extra_stages - len(extra_strides))
+                extra_channels = list(extra_stage_channels or [])
+                c_in = ecs[0] if ecs else 0
+                extra_out_channels: list[int] = []
+                for i in range(extra_stages):
+                        stride = extra_strides[i]
+                        c_out = extra_channels[i] if i < len(extra_channels) else c_in
+                        block = [
+                                nn.Conv2d(
+                                        c_in,
+                                        c_out,
+                                        kernel_size=3,
+                                        stride=stride,
+                                        padding=1,
+                                        bias=False,
+                                )
+                        ]
+                        if extra_stage_use_bn:
+                                block.append(nn.BatchNorm2d(c_out))
+                        block.append(nn.ReLU(inplace=True))
+                        self.extra_down.append(nn.Sequential(*block))
+                        extra_out_channels.append(c_out)
+                        c_in = c_out
+                if extra_out_channels:
+                        ecs = list(reversed(extra_out_channels)) + ecs
 
                 # Decoder
                 self.decoder = UnetDecoder2d(
@@ -299,6 +331,13 @@ class NetAE(nn.Module):
                 """
                 H, W = x.shape[-2:]
                 feats = self.backbone(x)[::-1]
+                top = feats[0]
+                for b in self.extra_down:
+                        top = b(top)
+                        feats = [top] + feats
+                if getattr(self, 'print_shapes', False):
+                        for i, f in enumerate(feats):
+                                print(f'Encoder feature {i} shape:', f.shape)
                 dec = self.decoder(feats)
                 y = self.seg_head(dec[-1])  # 低解像度 → 後段で補間
                 y = F.interpolate(y, size=(H, W), mode='bilinear', align_corners=False)
@@ -321,13 +360,13 @@ if __name__ == '__main__':
         model = NetAE(
                 backbone='caformer_b36.sail_in22k_ft_in1k',
                 pretrained=False,
-                stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
+                stage_strides=[(2, 4), (2, 2), (2, 1), (2, 2)],
+                extra_stages=2,
+                extra_stage_strides=((2, 2), (2, 1)),
         )
+        model.print_shapes = True
         model.eval()
 
         with torch.no_grad():
-                feats = model.backbone(dummy_input)[::-1]
-                for i, f in enumerate(feats):
-                        print(f'Encoder feature {i} shape:', f.shape)
                 output = model(dummy_input)
                 print('Output shape:', output.shape)
