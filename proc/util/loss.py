@@ -34,13 +34,13 @@ def shift_robust_l2_pertrace_vec(
 
 	base_idx = torch.arange(minW, device=device)  # (minW,)
 	idx_pred = start_pred[:, None] + base_idx[None, :]  # (K, minW)
-	idx_gt = start_gt[:, None] + base_idx[None, :]  # (K, minW)
+	idx_gt = start_gt[:, None] + base_idx[None, :]	# (K, minW)
 
-	idxp = idx_pred.view(K, 1, 1, 1, minW).expand(-1, B, C, H, -1)  # (K,B,C,H,minW)
+	idxp = idx_pred.view(K, 1, 1, 1, minW).expand(-1, B, C, H, -1)	# (K,B,C,H,minW)
 	idxg = idx_gt.view(K, 1, 1, 1, minW).expand(-1, B, C, H, -1)
 
 	pred_expanded = pred.unsqueeze(0).expand(K, -1, -1, -1, -1)  # (K,B,C,H,W)
-	gt_expanded = gt.unsqueeze(0).expand(K, -1, -1, -1, -1)  # (K,B,C,H,W)
+	gt_expanded = gt.unsqueeze(0).expand(K, -1, -1, -1, -1)	 # (K,B,C,H,W)
 
 	pred_g = pred_expanded.gather(dim=-1, index=idxp)  # (K,B,C,H,minW)
 	gt_g = gt_expanded.gather(dim=-1, index=idxg)  # (K,B,C,H,minW)
@@ -63,7 +63,7 @@ def shift_robust_l2_pertrace_vec(
 
 	diff2 = (pred_g - gt_g) ** 2  # (K,B,C,H,minW)
 	if mask_g is not None:
-		num = (diff2 * mask_g).sum(dim=(2, 4))  # (K,B,H)
+		num = (diff2 * mask_g).sum(dim=(2, 4))	# (K,B,H)
 		den = mask_g.sum(dim=(2, 4)).clamp_min(1e-8)  # (K,B,H)
 		loss_kbh = num / den  # (K,B,H)
 	else:
@@ -104,7 +104,7 @@ def shift_robust_l2_pertrace_loop(pred, gt, mask=None, max_shift=6, reduction='m
 		pd, gd = pred[..., ps], gt[..., gs]
 		if mask is not None:
 			md = mask[..., gs] if s >= 0 else mask[..., ps]
-			diff2 = (pd - gd) ** 2  # (B,C,H,W')
+			diff2 = (pd - gd) ** 2	# (B,C,H,W')
 			num = (diff2 * md).sum(dim=(1, 3))  # (B,H)
 			den = md.sum(dim=(1, 3)).clamp_min(1e-8)  # (B,H)
 			loss_bh = num / den  # (B,H)
@@ -150,11 +150,40 @@ def compute_loss(
 	return F.mse_loss(pred, target)
 
 
-def make_criterion(cfg_loss):
-	"""Return a criterion compatible with ``train_one_epoch``."""
+def fb_seg_loss(pred: torch.Tensor, target: torch.Tensor, fb_idx: torch.Tensor) -> torch.Tensor:
+	"""MSE loss for first-break segmentation.
 
-	def _criterion(pred, target, *, mask=None, max_shift=None, reduction='mean'):
-		return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
+	The loss is averaged over traces where ``fb_idx`` is non-negative.
+	If no valid traces exist in the batch, a zero loss with zero gradient is
+	returned to avoid ``NaN`` propagation.
+	"""
+	B, C, H, W = pred.shape
+	valid = (fb_idx >= 0).to(pred.dtype).view(B, 1, H, 1)
+	valid = valid.expand(-1, C, -1, W)
+	if valid.sum() == 0:
+		return (pred - pred).sum() * 0.0
+	diff2 = (pred - target) ** 2 * valid
+	return diff2.sum() / valid.sum()
+
+
+def make_criterion(cfg_loss, task: str = 'recon'):
+	"""Return a criterion compatible with ``train_one_epoch``.
+
+	Parameters
+	----------
+	cfg_loss: configuration object for reconstruction loss.
+	task: ``'recon'`` for reconstruction or ``'fb_seg'`` for first-break
+	    segmentation.
+
+	"""
+	if task == 'fb_seg':
+		def _criterion(pred, target, *, mask=None, fb_idx=None, **kwargs):
+			assert fb_idx is not None, 'fb_idx is required for fb_seg task'
+			return fb_seg_loss(pred, target, fb_idx)
+
+	else:
+		def _criterion(pred, target, *, mask=None, fb_idx=None, max_shift=None, reduction='mean'):
+			return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
 
 	return _criterion
 
