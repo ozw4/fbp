@@ -11,6 +11,7 @@ import torch
 import utils
 from ema import ModelEMA
 from hydra import compose, initialize
+from loss import make_criterion
 from model import NetAE, adjust_first_conv_padding
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
@@ -20,7 +21,6 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from util import (
 	MaskedSegyGather,
 	cover_all_traces_predict_chunked,
-	criterion,
 	eval_synthe,
 	load_synth_pair,
 	segy_collate,
@@ -47,6 +47,8 @@ scaler = GradScaler(enabled=use_amp)
 
 utils.init_distributed_mode(cfg)
 
+criterion = make_criterion(cfg.loss)
+
 train_field_list = cfg.train_field_list
 with open(f'/workspace/proc/configs/{train_field_list}') as f:
 	field_list = f.read().splitlines()
@@ -67,7 +69,7 @@ for field in field_list:
 train_dataset = MaskedSegyGather(
 	segy_files,
 	fb_files,
-	mask_ratio=0.5,
+	mask_ratio=cfg.dataset.mask_ratio,
 	flip=True,
 	augment_time_prob=0.3,
 	augment_time_range=(0.8, 1.2),
@@ -85,7 +87,7 @@ train_dataset = MaskedSegyGather(
 valid_dataset = MaskedSegyGather(
 	segy_files,
 	fb_files,
-	mask_ratio=0.5,
+	mask_ratio=cfg.dataset.mask_ratio,
 	flip=False,
 	augment_time_prob=0.0,
 	augment_space_prob=0.0,
@@ -269,7 +271,7 @@ for epoch in range(cfg.start_epoch, epochs):
 		criterion=criterion,
 		optimizer=optimizer,
 		lr_scheduler=lr_scheduler,
-		dataloader=train_loader,  # ★ここをtrain_datasetから修正
+		dataloader=train_loader,
 		device=device,
 		epoch=epoch,
 		print_freq=cfg.print_freq,
