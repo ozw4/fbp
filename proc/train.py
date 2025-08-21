@@ -69,7 +69,7 @@ for field in field_list:
 train_dataset = MaskedSegyGather(
 	segy_files,
 	fb_files,
-	mask_ratio=0.5,
+	mask_ratio=cfg.dataset.mask_ratio,
 	flip=True,
 	augment_time_prob=0.3,
 	augment_time_range=(0.8, 1.2),
@@ -87,7 +87,7 @@ train_dataset = MaskedSegyGather(
 valid_dataset = MaskedSegyGather(
 	segy_files,
 	fb_files,
-	mask_ratio=0.5,
+	mask_ratio=cfg.dataset.mask_ratio,
 	flip=False,
 	augment_time_prob=0.0,
 	augment_space_prob=0.0,
