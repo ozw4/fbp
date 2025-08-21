@@ -2,8 +2,9 @@ import time
 
 import torch
 import utils
-from loss import shift_robust_l2_pertrace_vec
 from torch.amp.autocast_mode import autocast
+
+from util.loss import shift_robust_l2_pertrace_vec
 
 __all__ = ['criterion', 'train_one_epoch']
 

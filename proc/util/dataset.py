@@ -1,5 +1,6 @@
 
 import random
+from typing import Literal
 
 import numpy as np
 import segyio
@@ -26,6 +27,8 @@ class MaskedSegyGather(Dataset):
 		ffid_byte=segyio.TraceField.FieldRecord,
 		chno_byte=segyio.TraceField.TraceNumber,
 		mask_ratio: float = 0.5,
+		mask_mode: Literal["replace", "add"] = "replace",
+		mask_noise_std: float = 1.0,
 		pick_ratio: float = 0.3,
 		target_len: int = 6016,
 		flip: bool = False,
@@ -39,12 +42,21 @@ class MaskedSegyGather(Dataset):
 		augment_freq_width: tuple[float, float] = (0.10, 0.35),
 		augment_freq_roll: float = 0.02,
 		augment_freq_restandardize: bool = True,
-	):
+	) -> None:
+		"""Initialize dataset.
+
+		Args:
+			mask_mode: replace to overwrite, add to perturb traces.
+			mask_noise_std: standard deviation of masking noise.
+
+		"""
 		self.segy_files = segy_files
 		self.fb_files = fb_files
 		self.ffid_byte = ffid_byte
 		self.chno_byte = chno_byte
 		self.mask_ratio = mask_ratio
+		self.mask_mode = mask_mode
+		self.mask_noise_std = mask_noise_std
 		self.flip = flip
 		self.pick_ratio = pick_ratio
 		self.target_len = target_len
@@ -179,7 +191,13 @@ class MaskedSegyGather(Dataset):
 		mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
 		x_masked = x.copy()
 		if num_mask > 0:
-			x_masked[mask_idx] = np.random.normal(0.0, 1.0, size=(num_mask, x.shape[1]))
+			noise = np.random.normal(0.0, self.mask_noise_std, size=(num_mask, x.shape[1]))
+			if self.mask_mode == "replace":
+				x_masked[mask_idx] = noise
+			elif self.mask_mode == "add":
+				x_masked[mask_idx] += noise
+			else:
+				raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
 		fb_idx_win = fb_subset.astype(np.int64)
 		invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
 		fb_idx_win[invalid] = -1

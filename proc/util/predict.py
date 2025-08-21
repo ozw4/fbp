@@ -1,4 +1,5 @@
 import math
+from typing import Literal
 
 import torch
 from torch.amp.autocast_mode import autocast
@@ -13,12 +14,18 @@ def cover_all_traces_predict(
 	*,
 	mask_ratio: float = 0.5,
 	noise_std: float = 1.0,
+	mask_noise_mode: Literal['replace', 'add'] = 'replace',
 	use_amp: bool = True,
 	device=None,
 	seed: int | None = 12345,
 	passes_batch: int = 4,
 ) -> torch.Tensor:
-	"""Predict each trace by covering all traces once."""
+	"""Predict each trace by covering all traces once.
+
+	Args:
+		mask_noise_mode: replace to overwrite, add to perturb traces.
+
+	"""
 	assert x.dim() == 4 and x.size(1) == 1, 'x must be (B,1,H,W)'
 	device = device or x.device
 	B, _, H, W = x.shape
@@ -49,7 +56,12 @@ def cover_all_traces_predict(
 					n = torch.randn((1, 1, len(idxs), W), device='cpu') * noise_std
 				n = n.to(device=device, non_blocking=True)
 				idxs_dev = idxs.to(device)
-				xm[:, :, idxs_dev, :] = n
+				if mask_noise_mode == 'replace':
+					xm[:, :, idxs_dev, :] = n
+				elif mask_noise_mode == 'add':
+					xm[:, :, idxs_dev, :] += n
+				else:
+					raise ValueError(f'Invalid mask_noise_mode: {mask_noise_mode}')
 				xmb.append(xm)
 			xmb = torch.cat(xmb, dim=0)
 			dev_type = 'cuda' if xmb.is_cuda else 'cpu'
@@ -69,12 +81,18 @@ def cover_all_traces_predict_chunked(
 	overlap: int = 32,
 	mask_ratio: float = 0.5,
 	noise_std: float = 1.0,
+	mask_noise_mode: Literal['replace', 'add'] = 'replace',
 	use_amp: bool = True,
 	device=None,
 	seed: int = 12345,
 	passes_batch: int = 4,
 ) -> torch.Tensor:
-	"""Apply cover_all_traces_predict on tiled H-axis chunks."""
+	"""Apply cover_all_traces_predict on tiled H-axis chunks.
+
+	Args:
+		mask_noise_mode: replace to overwrite, add to perturb traces.
+
+	"""
 	assert overlap < chunk_h, 'overlap は chunk_h より小さくしてください'
 	device = device or x.device
 	B, _, H, W = x.shape
@@ -90,6 +108,7 @@ def cover_all_traces_predict_chunked(
 			xt,
 			mask_ratio=mask_ratio,
 			noise_std=noise_std,
+			mask_noise_mode=mask_noise_mode,
 			use_amp=use_amp,
 			device=device,
 			seed=seed + s,

@@ -8,7 +8,7 @@ train_field_list: train_field_list.txt
 file_size: null
 
 # パス関連
-suffix: 'base'
+suffix: 'add'
 
 # モデル関連（共通部分）
 backbone: caformer_b36.sail_in22k_ft_in1k  #   swin_base_patch4_window7_224 hgnetv2_b2.ssld_stage2_ft_in1k
@@ -22,4 +22,4 @@ use_ema: True
 use_amp: True
 ema_decay: 0.99
 
-device: 'cuda:1'
+device: 'cuda'
