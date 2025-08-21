@@ -151,12 +151,36 @@ def compute_loss(
 
 
 def make_criterion(cfg_loss):
-	"""Return a criterion compatible with ``train_one_epoch``."""
+        """Return a criterion compatible with ``train_one_epoch``."""
 
-	def _criterion(pred, target, *, mask=None, max_shift=None, reduction='mean'):
-		return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
+        def _criterion(pred, target, *, mask=None, fb_idx=None, **kwargs):
+                return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
 
-	return _criterion
+        return _criterion
+
+
+def fb_seg_mse(pred: torch.Tensor, target: torch.Tensor, fb_idx: torch.Tensor) -> torch.Tensor:
+        """MSE averaged over traces with valid ``fb_idx``."""
+        assert pred.shape == target.shape, 'pred and target must share shape'
+        valid = fb_idx >= 0  # (B,H)
+        if valid.sum() == 0:
+                return torch.zeros((), dtype=pred.dtype, device=pred.device)
+        mask = valid[:, None, :, None].to(pred.dtype)
+        diff2 = (pred - target) ** 2
+        num = (diff2 * mask).sum()
+        den = mask.sum().clamp_min(1e-8)
+        return num / den
+
+
+def make_fb_seg_mse_criterion():
+        """Create criterion for first-break segmentation task."""
+
+        def _criterion(pred, target, *, fb_idx=None, **kwargs):
+                if fb_idx is None:
+                        raise ValueError('fb_idx must be provided for fb_seg task')
+                return fb_seg_mse(pred, target, fb_idx)
+
+        return _criterion
 
 
 def run_tests():

@@ -6,36 +6,72 @@ from scipy.ndimage import zoom as nd_zoom
 from scipy.signal import resample_poly
 
 __all__ = [
-	'_apply_freq_augment',
-	'_cosine_ramp',
-	'_fit_time_len_np',
-	'_make_freq_mask',
-	'_spatial_stretch_sameH',
-	'_time_stretch_poly',
+        '_apply_freq_augment',
+        '_cosine_ramp',
+        '_fit_time_len_np',
+        '_make_freq_mask',
+        '_spatial_stretch_sameH',
+        '_time_stretch_poly',
 ]
 
-def _time_stretch_poly(x_hw: np.ndarray, factor: float, target_len: int) -> np.ndarray:
-	"""Stretch (H,W) array in time and fit to target length."""
-	if abs(factor - 1.0) < 1e-4:
-		return _fit_time_len_np(x_hw, target_len)
-	H, W = x_hw.shape
-	frac = Fraction(factor).limit_denominator(128)
-	up, down = frac.numerator, frac.denominator
-	y = np.stack([
-		resample_poly(x_hw[h], up, down, padtype='line') for h in range(H)
-	], axis=0)
-	return _fit_time_len_np(y, target_len)
+def _time_stretch_poly(
+        x_hw: np.ndarray,
+        factor: float,
+        target_len: int,
+        return_offset: bool = False,
+) -> np.ndarray | tuple[np.ndarray, int]:
+        """Stretch (H,W) array in time and fit to target length.
 
-def _fit_time_len_np(x_hw: np.ndarray, target_len: int) -> np.ndarray:
-	"""Trim or pad (H,W') to target_len along time axis."""
-	W = x_hw.shape[1]
-	if target_len == W:
-		return x_hw
-	if target_len < W:
-		start = np.random.randint(0, W - target_len + 1)
-		return x_hw[:, start : start + target_len]
-	pad = target_len - W
-	return np.pad(x_hw, ((0, 0), (0, pad)), mode='constant')
+        Parameters
+        ----------
+        x_hw: np.ndarray
+                Input array of shape ``(H, W)``.
+        factor: float
+                Stretch factor along the time axis.
+        target_len: int
+                Desired output time length.
+        return_offset: bool, default False
+                When ``True`` also return the starting index used for
+                cropping/padding so callers can adjust label indices.
+
+        Returns
+        -------
+        y : np.ndarray | tuple[np.ndarray, int]
+                Stretched and fitted array. If ``return_offset`` is ``True``
+                a tuple of ``(y, start)`` is returned where ``start`` is the
+                starting offset applied after resampling.
+
+        """
+        if abs(factor - 1.0) < 1e-4:
+                return _fit_time_len_np(x_hw, target_len, return_offset=return_offset)
+
+        H, W = x_hw.shape
+        frac = Fraction(factor).limit_denominator(128)
+        up, down = frac.numerator, frac.denominator
+        y = np.stack(
+                [resample_poly(x_hw[h], up, down, padtype='line') for h in range(H)],
+                axis=0,
+        )
+        return _fit_time_len_np(y, target_len, return_offset=return_offset)
+
+def _fit_time_len_np(
+        x_hw: np.ndarray, target_len: int, return_offset: bool = False
+) -> np.ndarray | tuple[np.ndarray, int]:
+        """Trim or pad ``(H, W')`` to ``target_len`` along time axis."""
+        W = x_hw.shape[1]
+        if target_len == W:
+                start = 0
+                y = x_hw
+        elif target_len < W:
+                start = np.random.randint(0, W - target_len + 1)
+                y = x_hw[:, start : start + target_len]
+        else:
+                pad = target_len - W
+                y = np.pad(x_hw, ((0, 0), (0, pad)), mode='constant')
+                start = 0
+        if return_offset:
+                return y, int(start)
+        return y
 
 def _spatial_stretch_sameH(x_hw: np.ndarray, factor: float) -> np.ndarray:
 	"""Stretch traces spatially while keeping original count."""

@@ -5,6 +5,8 @@ defaults:
 
 # 学習設定
 
+task: recon
+
 batch_size: 16
 steps_per_epoch: 2000
 lr: 1e-5
@@ -49,6 +51,7 @@ dataset:
   mask_ratio: 0.5
   mask_mode: add         # replace | add
   mask_noise_std: 3
+  label_sigma: 5.0
 
 # Loss configuration
 loss:
