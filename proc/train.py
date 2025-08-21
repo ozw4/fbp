@@ -300,7 +300,7 @@ for epoch in range(cfg.start_epoch, epochs):
 	pred = cover_all_traces_predict_chunked(
 		eval_model,
 		synthe_noisy.to(device),
-		mask_noise_mode=cfg.dataset.mask_noise_mode,
+		mask_noise_mode=cfg.dataset.mask_mode,
 		noise_std=cfg.dataset.mask_noise_std,
 	)
 	synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
