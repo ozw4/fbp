@@ -7,12 +7,12 @@ defaults:
 
 batch_size: 16
 steps_per_epoch: 2000
-lr: 1e-4
+lr: 1e-5
 lr_milestones: []
 momentum: 0.9
 weight_decay: 0.0001
 lr_gamma: 0.2
-lr_warmup_epochs: 3
+lr_warmup_epochs: 10
 val_steps: 50
 epoch_block: 20
 num_block: 50
@@ -36,17 +36,19 @@ dist_url: env://
 tensorboard: true
 
 snr:
-  pre_len: 400
-  post_len: 400
+  pre_len: 100
+  post_len: 100
   guard: 12
   seed: 12345
   passes_batch: 4
+  mask_ratio_for_eval: ${dataset.mask_ratio}
   mask_noise_mode: ${dataset.mask_mode}
   noise_std: ${dataset.mask_noise_std}
 
 dataset:
+  mask_ratio: 0.5
   mask_mode: add         # replace | add
-  mask_noise_std: 3.0
+  mask_noise_std: 3
 
 # Loss configuration
 loss:

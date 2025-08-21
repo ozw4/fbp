@@ -271,7 +271,7 @@ for epoch in range(cfg.start_epoch, epochs):
 		criterion=criterion,
 		optimizer=optimizer,
 		lr_scheduler=lr_scheduler,
-		dataloader=train_loader,  # ★ここをtrain_datasetから修正
+		dataloader=train_loader,
 		device=device,
 		epoch=epoch,
 		print_freq=cfg.print_freq,
