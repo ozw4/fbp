@@ -47,3 +47,8 @@ snr:
 dataset:
   mask_mode: add         # replace | add
   mask_noise_std: 3.0
+
+# Loss configuration
+loss:
+  shift_robust: false    # set true for replace-mode training
+  max_shift: 5

@@ -11,6 +11,7 @@ import torch
 import utils
 from ema import ModelEMA
 from hydra import compose, initialize
+from loss import make_criterion
 from model import NetAE, adjust_first_conv_padding
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
@@ -20,7 +21,6 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from util import (
 	MaskedSegyGather,
 	cover_all_traces_predict_chunked,
-	criterion,
 	eval_synthe,
 	load_synth_pair,
 	segy_collate,
@@ -46,6 +46,8 @@ use_amp = cfg.use_amp
 scaler = GradScaler(enabled=use_amp)
 
 utils.init_distributed_mode(cfg)
+
+criterion = make_criterion(cfg.loss)
 
 train_field_list = cfg.train_field_list
 with open(f'/workspace/proc/configs/{train_field_list}') as f:
