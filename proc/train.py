@@ -57,25 +57,43 @@ if task == 'fb_seg':
 	criterion = make_fb_seg_criterion(cfg.loss.fb_seg)
 
 train_field_list = cfg.train_field_list
-with open(f'/workspace/proc/configs/{train_field_list}') as f:
-	field_list = f.read().splitlines()
+valid_field_list = cfg.valid_field_list
 
-segy_files = []
-fb_files = []
-for field in field_list:
-	# SEG-YとFBファイルを取得
-	field_dir = Path(cfg.data_root) / field
-	segy_file = list(field_dir.glob('*.sgy'))
-	fb_file = list(field_dir.glob('*.npy'))
-	if len(segy_file) != 1 or len(fb_file) != 1:
-		print(f'No SEG-Y or FB files found in {field}')
-		continue
-	segy_files.extend(segy_file)
-	fb_files.extend(fb_file)
+
+def collect_field_files(list_name: str, data_root: str):
+	"""configs/<list_name> に書かれたフィールド名ごとに .sgy と .npy を1つずつ集める。"""
+	list_path = Path('/workspace/proc/configs') / list_name
+	with open(list_path) as f:
+		fields = [
+			ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')
+		]
+
+	segy_files, fb_files = [], []
+	for field in fields:
+		d = Path(data_root) / field
+		# .sgy / .segy のどちらでも拾う
+		segy = sorted(list(d.glob('*.sgy')) + list(d.glob('*.segy')))
+		fb = sorted(d.glob('*.npy'))
+		if not segy or not fb:
+			print(f'[warn] No SEG-Y or FB files found in {field}')
+			continue
+		segy_files.append(segy[0])
+		fb_files.append(fb[0])
+	if not segy_files:
+		raise RuntimeError(f'No usable fields in {list_name}')
+	return segy_files, fb_files
+
+
+train_segy_files, train_fb_files = collect_field_files(
+	cfg.train_field_list, cfg.data_root
+)
+valid_segy_files, valid_fb_files = collect_field_files(
+	cfg.valid_field_list, cfg.data_root
+)
 
 train_dataset = MaskedSegyGather(
-	segy_files,
-	fb_files,
+	train_segy_files,
+	train_fb_files,
 	mask_ratio=cfg.dataset.mask_ratio,
 	mask_mode=cfg.dataset.mask_mode,
 	mask_noise_std=cfg.dataset.mask_noise_std,
@@ -94,8 +112,8 @@ train_dataset = MaskedSegyGather(
 	augment_freq_restandardize=True,
 )
 valid_dataset = MaskedSegyGather(
-	segy_files,
-	fb_files,
+	valid_segy_files,
+	valid_fb_files,
 	mask_ratio=cfg.dataset.mask_ratio,
 	mask_mode=cfg.dataset.mask_mode,
 	mask_noise_std=cfg.dataset.mask_noise_std,
