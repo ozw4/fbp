@@ -4,13 +4,13 @@ defaults:
   - _self_
 
 # Training task
-task: recon  # or fb_seg
+task: fb_seg  # or fb_seg
 
 # 学習設定
 
 batch_size: 16
-steps_per_epoch: 2000
-lr: 1e-5
+steps_per_epoch: 200
+lr: 1e-4
 lr_milestones: []
 momentum: 0.9
 weight_decay: 0.0001
