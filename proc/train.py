@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import utils
 from ema import ModelEMA
+from eval import val_one_epoch_fbseg
 from hydra import compose, initialize
 from loss import make_criterion
 from model import NetAE, adjust_first_conv_padding
@@ -51,9 +52,9 @@ utils.init_distributed_mode(cfg)
 criterion = make_criterion(cfg.loss)
 task = getattr(cfg, 'task', 'recon')
 if task == 'fb_seg':
-        from loss import make_fb_seg_criterion
+	from loss import make_fb_seg_criterion
 
-        criterion = make_fb_seg_criterion(cfg.loss.fb_seg)
+	criterion = make_fb_seg_criterion(cfg.loss.fb_seg)
 
 train_field_list = cfg.train_field_list
 with open(f'/workspace/proc/configs/{train_field_list}') as f:
@@ -304,7 +305,9 @@ for epoch in range(cfg.start_epoch, epochs):
 			writer=valid_writer,
 			epoch=epoch,
 			is_main_process=utils.is_main_process(),
-			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9) if utils.is_main_process() else (),
+			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+			if utils.is_main_process()
+			else (),
 		)
 
 		# 合成データ推論 & 指標
@@ -375,7 +378,9 @@ for epoch in range(cfg.start_epoch, epochs):
 			checkpoint['model_ema'] = ema.module.state_dict()
 
 		if save_flag:
-			utils.save_on_master(checkpoint, os.path.join(output_path, 'checkpoint.pth'))
+			utils.save_on_master(
+				checkpoint, os.path.join(output_path, 'checkpoint.pth')
+			)
 			print('saving checkpoint at epoch:', epoch)
 
 		print('epoch:', epoch)
@@ -388,6 +393,38 @@ for epoch in range(cfg.start_epoch, epochs):
 		print('  best SNR Δ(dB):', best_snr)
 		print('  synth MSE/MAE/PSNR:', synthe_metrics)
 		print('  best MSE:', best_mse)
+	elif task == 'fb_seg':
+		fb_metrics = val_one_epoch_fbseg(
+			eval_model,
+			val_loader,
+			device=device,
+			visualize=True,
+			writer=valid_writer,
+			epoch=epoch,
+			viz_batches=(0, 1, 2),
+		)
+		if utils.is_main_process():
+			valid_writer.add_scalar('fbseg/hit_at_4', fb_metrics['hit@4'], epoch)
+			valid_writer.add_scalar('fbseg/hit_at_8', fb_metrics['hit@8'], epoch)
+			valid_writer.add_scalar('fbseg/n_tr_valid', fb_metrics['n_tr_valid'], epoch)
+			valid_writer.flush()
+		checkpoint = {
+			'model': model_without_ddp.state_dict(),
+			'optimizer': optimizer.state_dict(),
+			'lr_scheduler': lr_scheduler.state_dict(),
+			'epoch': epoch,
+			'step': step,
+			'cfg': cfg,
+			'rng_state': {
+				'torch': torch.get_rng_state(),
+				'cuda': torch.cuda.get_rng_state_all(),
+				'numpy': np.random.get_state(),
+				'random': random.getstate(),
+			},
+		}
+		if ema:
+			checkpoint['model_ema'] = ema.module.state_dict()
+		print('epoch:', epoch)
 	else:
 		checkpoint = {
 			'model': model_without_ddp.state_dict(),
