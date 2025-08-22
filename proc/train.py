@@ -48,11 +48,11 @@ scaler = GradScaler(enabled=use_amp)
 utils.init_distributed_mode(cfg)
 
 # Select loss function based on task
-task = getattr(cfg.dataset, 'target_mode', 'recon')
+task = getattr(cfg, 'task', 'recon')
 if task == 'fb_seg':
-        criterion = make_fb_seg_mse_criterion()
+	criterion = make_fb_seg_mse_criterion()
 else:
-        criterion = make_criterion(cfg.loss)
+	criterion = make_criterion(cfg.loss)
 
 train_field_list = cfg.train_field_list
 with open(f'/workspace/proc/configs/{train_field_list}') as f:
@@ -72,37 +72,37 @@ for field in field_list:
 	fb_files.extend(fb_file)
 
 train_dataset = MaskedSegyGather(
-        segy_files,
-        fb_files,
-        mask_ratio=cfg.dataset.mask_ratio,
-        mask_mode=cfg.dataset.mask_mode,
-        mask_noise_std=cfg.dataset.mask_noise_std,
-        target_mode=cfg.dataset.target_mode,
-        label_sigma=cfg.dataset.label_sigma,
-        flip=True,
-        augment_time_prob=0.3,
-        augment_time_range=(0.8, 1.2),
-        augment_space_prob=0.3,
-        augment_space_range=(0.8, 1.2),
-        augment_freq_prob=0.5,  # ← 追加
-        augment_freq_kinds=('bandpass', 'lowpass', 'highpass'),
-        augment_freq_band=(0.05, 0.45),
-        augment_freq_width=(0.12, 0.35),
-        augment_freq_roll=0.02,
-        augment_freq_restandardize=True,
+	segy_files,
+	fb_files,
+	mask_ratio=cfg.dataset.mask_ratio,
+	mask_mode=cfg.dataset.mask_mode,
+	mask_noise_std=cfg.dataset.mask_noise_std,
+	target_mode=cfg.dataset.target_mode,
+	label_sigma=cfg.dataset.label_sigma,
+	flip=True,
+	augment_time_prob=0.3,
+	augment_time_range=(0.8, 1.2),
+	augment_space_prob=0.3,
+	augment_space_range=(0.8, 1.2),
+	augment_freq_prob=0.5,  # ← 追加
+	augment_freq_kinds=('bandpass', 'lowpass', 'highpass'),
+	augment_freq_band=(0.05, 0.45),
+	augment_freq_width=(0.12, 0.35),
+	augment_freq_roll=0.02,
+	augment_freq_restandardize=True,
 )
 valid_dataset = MaskedSegyGather(
-        segy_files,
-        fb_files,
-        mask_ratio=cfg.dataset.mask_ratio,
-        mask_mode=cfg.dataset.mask_mode,
-        mask_noise_std=cfg.dataset.mask_noise_std,
-        target_mode=cfg.dataset.target_mode,
-        label_sigma=cfg.dataset.label_sigma,
-        flip=False,
-        augment_time_prob=0.0,
-        augment_space_prob=0.0,
-        augment_freq_prob=0.0,
+	segy_files,
+	fb_files,
+	mask_ratio=cfg.dataset.mask_ratio,
+	mask_mode=cfg.dataset.mask_mode,
+	mask_noise_std=cfg.dataset.mask_noise_std,
+	target_mode=cfg.dataset.target_mode,
+	label_sigma=cfg.dataset.label_sigma,
+	flip=False,
+	augment_time_prob=0.0,
+	augment_space_prob=0.0,
+	augment_freq_prob=0.0,
 )
 val_src = copy.copy(valid_dataset)  # file_infos を共有
 val_src.flip = False  # ここだけ無反転で取りたい場合
@@ -293,99 +293,119 @@ for epoch in range(cfg.start_epoch, epochs):
 	)
 	eval_model = ema.module if ema else model
 
-	snr_dict = val_one_epoch_snr(
-		eval_model,
-		val_loader,
-		device=device,
-		cfg_snr=cfg.snr,
-		visualize=True,
-		writer=valid_writer,
-		epoch=epoch,
-		is_main_process=utils.is_main_process(),
-		viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9) if utils.is_main_process() else (),
-	)
-
-	# 合成データ推論 & 指標
-	pred = cover_all_traces_predict_chunked(
-		eval_model,
-		synthe_noisy.to(device),
-		mask_noise_mode=cfg.dataset.mask_noise_mode,
-		noise_std=cfg.dataset.mask_noise_std,
-	)
-	synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
-	for i in range(len(synthe_noisy)):
-		visualize_pair_quartet(
-			synthe_noisy[:, :, :, :1251],
-			pred[:, :, :, :1251],
-			synthe_clean[:, :, :, :1251],
-			b=i,  # 1ショットのみ
-			transpose=True,
-			prefix='synth',
+	if task == 'recon':
+		snr_dict = val_one_epoch_snr(
+			eval_model,
+			val_loader,
+			device=device,
+			cfg_snr=cfg.snr,
+			visualize=True,
 			writer=valid_writer,
-			global_step=epoch,
+			epoch=epoch,
+			is_main_process=utils.is_main_process(),
+			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9) if utils.is_main_process() else (),
 		)
 
-	# ── TensorBoard: エポック単位で記録 ──
-	if utils.is_main_process():
-		valid_writer.add_scalars(
-			'val_snr',
-			{
-				'in_db': snr_dict['snr_in_db'],
-				'out_db': snr_dict['snr_out_db'],
-				'improve_db': snr_dict['snr_improve_db'],
+		# 合成データ推論 & 指標
+		pred = cover_all_traces_predict_chunked(
+			eval_model,
+			synthe_noisy.to(device),
+			mask_noise_mode=cfg.dataset.mask_noise_mode,
+			noise_std=cfg.dataset.mask_noise_std,
+		)
+		synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
+		for i in range(len(synthe_noisy)):
+			visualize_pair_quartet(
+				synthe_noisy[:, :, :, :1251],
+				pred[:, :, :, :1251],
+				synthe_clean[:, :, :, :1251],
+				b=i,  # 1ショットのみ
+				transpose=True,
+				prefix='synth',
+				writer=valid_writer,
+				global_step=epoch,
+			)
+
+		# ── TensorBoard: エポック単位で記録 ──
+		if utils.is_main_process():
+			valid_writer.add_scalars(
+				'val_snr',
+				{
+					'in_db': snr_dict['snr_in_db'],
+					'out_db': snr_dict['snr_out_db'],
+					'improve_db': snr_dict['snr_improve_db'],
+				},
+				epoch,
+			)
+			valid_writer.add_scalar('val_snr/valid_frac', snr_dict['valid_frac'], epoch)
+
+			valid_writer.add_scalar('val_synth/mse', synthe_metrics['mse'], epoch)
+			valid_writer.add_scalar('val_synth/mae', synthe_metrics['mae'], epoch)
+			valid_writer.add_scalar('val_synth/psnr', synthe_metrics['psnr'], epoch)
+			valid_writer.flush()
+
+		# ── ベスト更新（MSEは小さいほど良い / SNR改善は大きいほど良い） ──
+		save_flag = False
+		if synthe_metrics['mse'] < best_mse:
+			best_mse = synthe_metrics['mse']
+			save_flag = True
+		if snr_dict['snr_improve_db'] > best_snr:
+			best_snr = snr_dict['snr_improve_db']
+			save_flag = True
+
+		# チェックポイント作成
+		checkpoint = {
+			'model': model_without_ddp.state_dict(),
+			'optimizer': optimizer.state_dict(),
+			'lr_scheduler': lr_scheduler.state_dict(),
+			'epoch': epoch,
+			'step': step,
+			'cfg': cfg,
+			'best_mse': best_mse,
+			'best_snr': best_snr,
+			'rng_state': {
+				'torch': torch.get_rng_state(),
+				'cuda': torch.cuda.get_rng_state_all(),
+				'numpy': np.random.get_state(),
+				'random': random.getstate(),
 			},
-			epoch,
+		}
+		if ema:
+			checkpoint['model_ema'] = ema.module.state_dict()
+
+		if save_flag:
+			utils.save_on_master(checkpoint, os.path.join(output_path, 'checkpoint.pth'))
+			print('saving checkpoint at epoch:', epoch)
+
+		print('epoch:', epoch)
+		print(
+			'  SNR in/out/Δ(dB):',
+			snr_dict['snr_in_db'],
+			snr_dict['snr_out_db'],
+			snr_dict['snr_improve_db'],
 		)
-		valid_writer.add_scalar('val_snr/valid_frac', snr_dict['valid_frac'], epoch)
+		print('  best SNR Δ(dB):', best_snr)
+		print('  synth MSE/MAE/PSNR:', synthe_metrics)
+		print('  best MSE:', best_mse)
+	else:
+		checkpoint = {
+			'model': model_without_ddp.state_dict(),
+			'optimizer': optimizer.state_dict(),
+			'lr_scheduler': lr_scheduler.state_dict(),
+			'epoch': epoch,
+			'step': step,
+			'cfg': cfg,
+			'rng_state': {
+				'torch': torch.get_rng_state(),
+				'cuda': torch.cuda.get_rng_state_all(),
+				'numpy': np.random.get_state(),
+				'random': random.getstate(),
+			},
+		}
+		if ema:
+			checkpoint['model_ema'] = ema.module.state_dict()
+		print('epoch:', epoch)
 
-		valid_writer.add_scalar('val_synth/mse', synthe_metrics['mse'], epoch)
-		valid_writer.add_scalar('val_synth/mae', synthe_metrics['mae'], epoch)
-		valid_writer.add_scalar('val_synth/psnr', synthe_metrics['psnr'], epoch)
-		valid_writer.flush()
-
-	# ── ベスト更新（MSEは小さいほど良い / SNR改善は大きいほど良い） ──
-	save_flag = False
-	if synthe_metrics['mse'] < best_mse:
-		best_mse = synthe_metrics['mse']
-		save_flag = True
-	if snr_dict['snr_improve_db'] > best_snr:
-		best_snr = snr_dict['snr_improve_db']
-		save_flag = True
-
-	# チェックポイント作成
-	checkpoint = {
-		'model': model_without_ddp.state_dict(),
-		'optimizer': optimizer.state_dict(),
-		'lr_scheduler': lr_scheduler.state_dict(),
-		'epoch': epoch,
-		'step': step,
-		'cfg': cfg,
-		'best_mse': best_mse,
-		'best_snr': best_snr,
-		'rng_state': {
-			'torch': torch.get_rng_state(),
-			'cuda': torch.cuda.get_rng_state_all(),
-			'numpy': np.random.get_state(),
-			'random': random.getstate(),
-		},
-	}
-	if ema:
-		checkpoint['model_ema'] = ema.module.state_dict()
-
-	if save_flag:
-		utils.save_on_master(checkpoint, os.path.join(output_path, 'checkpoint.pth'))
-		print('saving checkpoint at epoch:', epoch)
-
-	print('epoch:', epoch)
-	print(
-		'  SNR in/out/Δ(dB):',
-		snr_dict['snr_in_db'],
-		snr_dict['snr_out_db'],
-		snr_dict['snr_improve_db'],
-	)
-	print('  best SNR Δ(dB):', best_snr)
-	print('  synth MSE/MAE/PSNR:', synthe_metrics)
-	print('  best MSE:', best_mse)
 	if output_path and (epoch + 1) % cfg.epoch_block == 0:
 		utils.save_on_master(
 			checkpoint, os.path.join(output_path, f'model_{epoch + 1}.pth')
