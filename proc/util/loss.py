@@ -151,12 +151,39 @@ def compute_loss(
 
 
 def make_criterion(cfg_loss):
-	"""Return a criterion compatible with ``train_one_epoch``."""
+        """Return a criterion compatible with ``train_one_epoch``."""
 
-	def _criterion(pred, target, *, mask=None, max_shift=None, reduction='mean'):
-		return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
+        def _criterion(pred, target, *, mask=None, **kwargs):
+                return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
 
-	return _criterion
+        return _criterion
+
+
+def make_fb_seg_mse_criterion():
+        """Return MSE criterion for fb segmentation.
+
+        The loss averages the MSE over traces where ``fb_idx>=0``. If no valid
+        trace exists in the batch, the loss gracefully returns ``0`` without
+        raising errors or producing NaNs.
+        """
+
+        def _criterion(
+                pred: torch.Tensor,
+                target: torch.Tensor,
+                *,
+                fb_idx: torch.Tensor,
+                mask=None,
+                **kwargs,
+        ) -> torch.Tensor:
+                # pred/target: (B,1,H,W), fb_idx: (B,H)
+                diff2 = (pred - target) ** 2  # (B,1,H,W)
+                loss_bh = diff2.mean(dim=(1, 3))  # (B,H)
+                valid = (fb_idx >= 0).to(loss_bh.dtype)
+                num = (loss_bh * valid).sum()
+                den = valid.sum().clamp_min(1)
+                return num / den
+
+        return _criterion
 
 
 def run_tests():

@@ -11,7 +11,7 @@ import torch
 import utils
 from ema import ModelEMA
 from hydra import compose, initialize
-from loss import make_criterion
+from loss import make_criterion, make_fb_seg_mse_criterion
 from model import NetAE, adjust_first_conv_padding
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
@@ -47,7 +47,12 @@ scaler = GradScaler(enabled=use_amp)
 
 utils.init_distributed_mode(cfg)
 
-criterion = make_criterion(cfg.loss)
+# Select loss function based on task
+task = getattr(cfg.dataset, 'target_mode', 'recon')
+if task == 'fb_seg':
+        criterion = make_fb_seg_mse_criterion()
+else:
+        criterion = make_criterion(cfg.loss)
 
 train_field_list = cfg.train_field_list
 with open(f'/workspace/proc/configs/{train_field_list}') as f:
@@ -67,33 +72,37 @@ for field in field_list:
 	fb_files.extend(fb_file)
 
 train_dataset = MaskedSegyGather(
-	segy_files,
-	fb_files,
-	mask_ratio=cfg.dataset.mask_ratio,
-	flip=True,
-	augment_time_prob=0.3,
-	augment_time_range=(0.8, 1.2),
-	augment_space_prob=0.3,
-	augment_space_range=(0.8, 1.2),
-	augment_freq_prob=0.5,  # ← 追加
-	augment_freq_kinds=('bandpass', 'lowpass', 'highpass'),
-	augment_freq_band=(0.05, 0.45),
-	augment_freq_width=(0.12, 0.35),
-	augment_freq_roll=0.02,
-	augment_freq_restandardize=True,
-	mask_mode=cfg.dataset.mask_mode,
-	mask_noise_std=cfg.dataset.mask_noise_std,
+        segy_files,
+        fb_files,
+        mask_ratio=cfg.dataset.mask_ratio,
+        mask_mode=cfg.dataset.mask_mode,
+        mask_noise_std=cfg.dataset.mask_noise_std,
+        target_mode=cfg.dataset.target_mode,
+        label_sigma=cfg.dataset.label_sigma,
+        flip=True,
+        augment_time_prob=0.3,
+        augment_time_range=(0.8, 1.2),
+        augment_space_prob=0.3,
+        augment_space_range=(0.8, 1.2),
+        augment_freq_prob=0.5,  # ← 追加
+        augment_freq_kinds=('bandpass', 'lowpass', 'highpass'),
+        augment_freq_band=(0.05, 0.45),
+        augment_freq_width=(0.12, 0.35),
+        augment_freq_roll=0.02,
+        augment_freq_restandardize=True,
 )
 valid_dataset = MaskedSegyGather(
-	segy_files,
-	fb_files,
-	mask_ratio=cfg.dataset.mask_ratio,
-	flip=False,
-	augment_time_prob=0.0,
-	augment_space_prob=0.0,
-	augment_freq_prob=0.0,
-	mask_mode=cfg.dataset.mask_mode,
-	mask_noise_std=cfg.dataset.mask_noise_std,
+        segy_files,
+        fb_files,
+        mask_ratio=cfg.dataset.mask_ratio,
+        mask_mode=cfg.dataset.mask_mode,
+        mask_noise_std=cfg.dataset.mask_noise_std,
+        target_mode=cfg.dataset.target_mode,
+        label_sigma=cfg.dataset.label_sigma,
+        flip=False,
+        augment_time_prob=0.0,
+        augment_space_prob=0.0,
+        augment_freq_prob=0.0,
 )
 val_src = copy.copy(valid_dataset)  # file_infos を共有
 val_src.flip = False  # ここだけ無反転で取りたい場合
