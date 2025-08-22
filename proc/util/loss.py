@@ -159,6 +159,81 @@ def make_criterion(cfg_loss):
         return _criterion
 
 
+def fb_seg_kl_loss(
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        valid_mask: torch.Tensor | None = None,
+        tau: float = 1.0,
+        eps: float = 0.0,
+):
+        """KL-divergence loss for first-break segmentation.
+
+        Parameters
+        ----------
+        logits : torch.Tensor
+                Raw model outputs of shape ``(B,1,H,W)``.
+        target : torch.Tensor
+                Target probabilities (Gaussian-like) of shape ``(B,1,H,W)``.
+        valid_mask : torch.Tensor | None
+                Optional mask indicating valid traces. Expected shape ``(B,H)``
+                or ``(B,1,H,1)``. Invalid traces are ignored in the loss.
+        tau : float
+                Softmax temperature.
+        eps : float
+                Label smoothing factor.
+
+        """
+        log_p = F.log_softmax(logits.squeeze(1) / tau, dim=-1)  # (B,H,W)
+        q = target.squeeze(1)
+        q = q / (q.sum(dim=-1, keepdim=True) + 1e-12)
+        if eps > 0:
+                q = (1 - eps) * q + eps / q.size(-1)
+        kl_bh = -(q * log_p).sum(dim=-1)  # (B,H)
+        if valid_mask is not None:
+                if valid_mask.dim() == 4:
+                        valid = valid_mask.squeeze(1).squeeze(-1)
+                else:
+                        valid = valid_mask
+                valid = valid.to(kl_bh.dtype)
+                num = (kl_bh * valid).sum()
+                den = valid.sum().clamp_min(1)
+                return num / den
+        return kl_bh.mean()
+
+
+def make_fb_seg_criterion(cfg_fb):
+        """Factory for fb segmentation loss.
+
+        ``cfg_fb.type`` selects between KL-divergence (``'kl'``) and MSE
+        (``'mse'``). Additional parameters ``tau`` and ``eps`` configure the
+        KL variant.
+        """
+        fb_type = str(getattr(cfg_fb, 'type', 'kl')).lower()
+        if fb_type == 'kl':
+                tau = float(getattr(cfg_fb, 'tau', 1.0))
+                eps = float(getattr(cfg_fb, 'eps', 0.0))
+
+                def _criterion(
+                        pred: torch.Tensor,
+                        target: torch.Tensor,
+                        *,
+                        fb_idx: torch.Tensor,
+                        mask=None,
+                        **kwargs,
+                ) -> torch.Tensor:
+                        valid_mask = (fb_idx >= 0).to(pred.dtype)
+                        return fb_seg_kl_loss(
+                                pred, target, valid_mask=valid_mask, tau=tau, eps=eps
+                        )
+
+                return _criterion
+
+        if fb_type == 'mse':
+                return make_fb_seg_mse_criterion()
+
+        raise ValueError(f"Unknown fb_seg loss type: {fb_type}")
+
+
 def make_fb_seg_mse_criterion():
         """Return MSE criterion for fb segmentation.
 

@@ -59,3 +59,7 @@ dataset:
 loss:
   shift_robust: false    # set true for replace-mode training
   max_shift: 5
+  fb_seg:
+    type: kl   # "kl" or "mse"
+    tau: 1.0   # softmax 温度
+    eps: 0.01  # ラベルスムージング(0..0.05 程度)
