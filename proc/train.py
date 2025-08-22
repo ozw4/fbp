@@ -130,7 +130,7 @@ class FrozenValDataset(Dataset):
 
 
 valid_dataset = FrozenValDataset(val_items)
-output_path = Path(f'./result/{train_field_list.split(".")[0]}_{cfg.suffix}')
+output_path = Path(f'./result/{task}/{train_field_list.split(".")[0]}_{cfg.suffix}')
 
 utils.mkdir(output_path)
 train_writer = SummaryWriter(os.path.join(output_path, 'logs', 'train'))
@@ -404,6 +404,8 @@ for epoch in range(cfg.start_epoch, epochs):
 			viz_batches=(0, 1, 2),
 		)
 		if utils.is_main_process():
+			valid_writer.add_scalar('fbseg/hit_at_0', fb_metrics['hit@0'], epoch)
+			valid_writer.add_scalar('fbseg/hit_at_2', fb_metrics['hit@2'], epoch)
 			valid_writer.add_scalar('fbseg/hit_at_4', fb_metrics['hit@4'], epoch)
 			valid_writer.add_scalar('fbseg/hit_at_8', fb_metrics['hit@8'], epoch)
 			valid_writer.add_scalar('fbseg/n_tr_valid', fb_metrics['n_tr_valid'], epoch)
