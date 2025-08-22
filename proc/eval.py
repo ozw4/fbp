@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 import torch.nn.functional as F
 
 __all__ = ['val_one_epoch_fbseg', 'visualize_fb_seg_triplet']
@@ -28,30 +29,50 @@ def visualize_fb_seg_triplet(
 	y = np.arange(h)
 
 	fig, axes = plt.subplots(1, 3, figsize=(9, 4), dpi=200, constrained_layout=True)
-	axes[0].imshow(x_img, aspect='auto', cmap='gray', interpolation='none')
-	axes[0].invert_yaxis()
+	axes[0].imshow(
+		x_img.T, aspect='auto', cmap='gray', interpolation='none', vmin=-3, vmax=3
+	)
 	axes[0].set_title('Amplitude')
 
 	axes[1].imshow(
-		p, aspect='auto', cmap='turbo', interpolation='none', vmin=0.0, vmax=1.0
+		p.T, aspect='auto', cmap='turbo', interpolation='none', vmin=0.0, vmax=1.0
 	)
-	axes[1].invert_yaxis()
 	axes[1].set_title('Probability')
 
-	axes[2].imshow(x_img, aspect='auto', cmap='gray', interpolation='none')
-	axes[2].scatter(pred, y, s=4, c='lime', marker='o', label='Pred')
+	axes[2].imshow(
+		x_img.T, aspect='auto', cmap='gray', interpolation='none', vmin=-3, vmax=3
+	)
+	axes[2].scatter(y, pred, s=2, c='lime', marker='o', label='Pred')
 	valid = gt >= 0
 	if valid.any():
-		axes[2].scatter(gt[valid], y[valid], s=4, c='red', marker='o', label='GT')
-	axes[2].invert_yaxis()
+		axes[2].scatter(
+			y[valid], gt[valid], s=1, c='red', marker='o', label='GT', alpha=0.5
+		)
 	axes[2].set_title('Overlay')
 	axes[2].legend(loc='upper right')
+
+	W = x_img.shape[1]  # サンプル長（縦方向）
+	valid = gt >= 0
+	max_fb = int(gt[valid].max()) if valid.any() else int(pred.max())
+
+	# 次の500の倍数に切り上げ（画像の高さは超えないようにクランプ）
+	ymax = int(np.ceil((max_fb + 1) / 500.0) * 500)
+	ymax = min(ymax, W - 1)
+
+	# y軸: 上=0, 下=ymax。500サンプルごとに目盛り
+	for ax in axes:
+		ax.set_ylim(
+			ymax,
+			0,
+		)  # 0 が上になる
+		ax.set_yticks(np.arange(0, ymax + 1, 500))
 
 	if writer is not None:
 		writer.add_figure(f'{tag_prefix}/b{b:03d}', fig, global_step=global_step)
 	return fig
 
 
+@torch.no_grad()
 def val_one_epoch_fbseg(
 	model,
 	val_loader,
@@ -69,6 +90,8 @@ def val_one_epoch_fbseg(
 
 	"""
 	model.eval()
+	hit0 = 0
+	hit2 = 0
 	hit4 = 0
 	hit8 = 0
 	n_valid = 0
@@ -80,6 +103,8 @@ def val_one_epoch_fbseg(
 		pred = prob.argmax(dim=-1)
 		valid = fb >= 0
 		diff = (pred - fb).abs()
+		hit0 += ((diff == 0) & valid).sum().item()
+		hit2 += ((diff <= 2) & valid).sum().item()
 		hit4 += ((diff <= 4) & valid).sum().item()
 		hit8 += ((diff <= 8) & valid).sum().item()
 		n_valid += valid.sum().item()
@@ -96,6 +121,8 @@ def val_one_epoch_fbseg(
 			)
 			plt.close(fig)
 	return {
+		'hit@0': float(hit0) / max(n_valid, 1),
+		'hit@2': float(hit2) / max(n_valid, 1),
 		'hit@4': float(hit4) / max(n_valid, 1),
 		'hit@8': float(hit8) / max(n_valid, 1),
 		'n_tr_valid': int(n_valid),
