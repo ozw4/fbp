@@ -1,4 +1,3 @@
-
 import random
 from fractions import Fraction
 from typing import Literal
@@ -27,7 +26,7 @@ class MaskedSegyGather(Dataset):
 		ffid_byte=segyio.TraceField.FieldRecord,
 		chno_byte=segyio.TraceField.TraceNumber,
 		mask_ratio: float = 0.5,
-		mask_mode: Literal["replace", "add"] = "replace",
+		mask_mode: Literal['replace', 'add'] = 'replace',
 		mask_noise_std: float = 1.0,
 		pick_ratio: float = 0.3,
 		target_len: int = 6016,
@@ -42,7 +41,7 @@ class MaskedSegyGather(Dataset):
 		augment_freq_width: tuple[float, float] = (0.10, 0.35),
 		augment_freq_roll: float = 0.02,
 		augment_freq_restandardize: bool = True,
-		target_mode: Literal["recon", "fb_seg"] = "recon",
+		target_mode: Literal['recon', 'fb_seg'] = 'recon',
 		label_sigma: float = 1.0,
 	) -> None:
 		"""Initialize dataset.
@@ -85,6 +84,7 @@ class MaskedSegyGather(Dataset):
 			chno_values = f.attributes(self.chno_byte)[:]
 			chno_key_to_indices = self._build_index_map(chno_values)
 			chno_unique_keys = list(chno_key_to_indices.keys())
+			dt = int(f.bin[segyio.BinField.Interval]) / 1e3
 			fb = np.load(fb_path)
 			self.file_infos.append(
 				dict(
@@ -98,6 +98,7 @@ class MaskedSegyGather(Dataset):
 					chno_unique_keys=chno_unique_keys,
 					n_samples=f.samples.size,
 					n_traces=f.tracecount,
+					dt=dt,
 					segy_obj=f,
 					fb=fb,
 				)
@@ -117,8 +118,9 @@ class MaskedSegyGather(Dataset):
 	def __del__(self) -> None:
 		self.close()
 
-
-	def _fit_time_len(self, x: np.ndarray, start: int | None = None) -> tuple[np.ndarray, int]:
+	def _fit_time_len(
+		self, x: np.ndarray, start: int | None = None
+	) -> tuple[np.ndarray, int]:
 		T, target = x.shape[1], self.target_len
 		if start is None:
 			start = np.random.randint(0, max(1, T - target + 1)) if target < T else 0
@@ -130,7 +132,9 @@ class MaskedSegyGather(Dataset):
 		return x, start
 
 	def _build_index_map(self, key_array: np.ndarray) -> dict[int, np.ndarray]:
-		uniq, inv, counts = np.unique(key_array, return_inverse=True, return_counts=True)
+		uniq, inv, counts = np.unique(
+			key_array, return_inverse=True, return_counts=True
+		)
 		sort_idx = np.argsort(inv, kind='mergesort')
 		split_points = np.cumsum(counts)[:-1]
 		groups = np.split(sort_idx, split_points)
@@ -143,6 +147,7 @@ class MaskedSegyGather(Dataset):
 		while True:
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
+			fb = info['fb']
 			key_name = random.choice(['ffid', 'chno'])
 			unique_keys = info[f'{key_name}_unique_keys']
 			key_to_indices = info[f'{key_name}_key_to_indices']
@@ -156,7 +161,7 @@ class MaskedSegyGather(Dataset):
 			else:
 				selected_indices = indices
 				pad_len = 128 - n_total
-			fb_subset = info['fb'][selected_indices]
+			fb_subset = fb[selected_indices]
 			if pad_len > 0:
 				fb_subset = np.concatenate(
 					[fb_subset, np.zeros(pad_len, dtype=fb_subset.dtype)]
@@ -180,10 +185,7 @@ class MaskedSegyGather(Dataset):
 			up, down = frac.numerator, frac.denominator
 			H_tmp = x.shape[0]
 			x = np.stack(
-				[
-					resample_poly(x[h], up, down, padtype='line')
-					for h in range(H_tmp)
-				],
+				[resample_poly(x[h], up, down, padtype='line') for h in range(H_tmp)],
 				axis=0,
 			)
 		x, start = self._fit_time_len(x)
@@ -202,7 +204,7 @@ class MaskedSegyGather(Dataset):
 		fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
 		invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
 		fb_idx_win[invalid] = -1
-		if self.target_mode == "recon":
+		if self.target_mode == 'recon':
 			H = x.shape[0]
 			num_mask = int(self.mask_ratio * H)
 			mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
@@ -211,26 +213,29 @@ class MaskedSegyGather(Dataset):
 				noise = np.random.normal(
 					0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
 				)
-				if self.mask_mode == "replace":
+				if self.mask_mode == 'replace':
 					x_masked[mask_idx] = noise
-				elif self.mask_mode == "add":
+				elif self.mask_mode == 'add':
 					x_masked[mask_idx] += noise
 				else:
 					raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
 		else:
 			mask_idx = []
 			x_masked = x.copy()
-		if self.target_mode == "fb_seg":
+		if self.target_mode == 'fb_seg':
 			sigma = max(float(self.label_sigma), 1e-6)
 			H_t, W_t = x.shape
-			t = np.arange(W_t, dtype=np.float32)
+			t = np.arange(W_t, dtype=np.float32)[None, :]  # (1, W)
 			target = np.zeros((H_t, W_t), dtype=np.float32)
-			for i, idx in enumerate(fb_idx_win):
-				if idx >= 0:
-					g = np.exp(-0.5 * ((t - idx) / sigma) ** 2)
-					if g.max() > 0:
-						g /= g.max()
-					target[i] = g
+
+			idx = fb_idx_win
+			valid = idx >= 0
+			if valid.any():
+				idxv = idx[valid].astype(np.float32)[:, None]  # (Hv, 1)
+				g = np.exp(-0.5 * ((t - idxv) / sigma) ** 2)  # (Hv, W)
+				g /= g.max(axis=1, keepdims=True) + 1e-12  # 安全にピーク=1
+				target[valid] = g
+
 			target_t = torch.from_numpy(target)[None, ...]
 		x_t = torch.from_numpy(x)[None, ...]
 		xm = torch.from_numpy(x_masked)[None, ...]
@@ -243,7 +248,7 @@ class MaskedSegyGather(Dataset):
 			'indices': selected_indices,
 			'file_path': info['path'],
 		}
-		if self.target_mode == "recon":
+		if self.target_mode == 'recon':
 			sample['mask_indices'] = mask_idx
 		else:
 			sample['target'] = target_t
