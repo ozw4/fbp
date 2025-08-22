@@ -11,7 +11,7 @@ import torch
 import utils
 from ema import ModelEMA
 from hydra import compose, initialize
-from loss import make_criterion, make_fb_seg_mse_criterion
+from loss import make_criterion
 from model import NetAE, adjust_first_conv_padding
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
@@ -48,11 +48,12 @@ scaler = GradScaler(enabled=use_amp)
 utils.init_distributed_mode(cfg)
 
 # Select loss function based on task
+criterion = make_criterion(cfg.loss)
 task = getattr(cfg, 'task', 'recon')
 if task == 'fb_seg':
-	criterion = make_fb_seg_mse_criterion()
-else:
-	criterion = make_criterion(cfg.loss)
+        from loss import make_fb_seg_criterion
+
+        criterion = make_fb_seg_criterion(cfg.loss.fb_seg)
 
 train_field_list = cfg.train_field_list
 with open(f'/workspace/proc/configs/{train_field_list}') as f:
