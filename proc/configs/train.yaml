@@ -3,6 +3,9 @@ defaults:
   - base
   - _self_
 
+# Training task
+task: recon  # or fb_seg
+
 # 学習設定
 
 batch_size: 16
@@ -49,8 +52,8 @@ dataset:
   mask_ratio: 0.5
   mask_mode: add         # replace | add
   mask_noise_std: 3
-  target_mode: recon
-  label_sigma: 1.0
+  target_mode: ${task}
+  label_sigma: 5.0
 
 # Loss configuration
 loss:
