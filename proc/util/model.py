@@ -453,7 +453,9 @@ if __name__ == '__main__':
 	# pre_stages=1 で横方向のみ 1/4 に縮小
 
 	model = NetAE(
-		backbone='caformer_b36.sail_in22k_ft_in1k',
+		# backbone='caformer_b36.sail_in22k_ft_in1k',
+		# backbone='convnextv2_base.fcmae_ft_in22k_in1k_384',
+		backbone='edgenext_small.usi_in1k',
 		pretrained=True,
 		stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
 		pre_stages=2,
@@ -462,7 +464,7 @@ if __name__ == '__main__':
 			(1, 2),
 		),
 	)
-	adjust_first_conv_padding(model.backbone, padding=(3, 3))
+	# adjust_first_conv_padding(model.backbone, padding=(3, 3))
 	model.print_shapes = True
 	model.eval()
 
