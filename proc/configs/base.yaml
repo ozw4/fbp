@@ -5,13 +5,14 @@ defaults:
 # データセット
 data_root : '/home/dcuser/data/ActiveSeisField/'
 train_field_list: train_field_list.txt
+valid_field_list: train_field_list.txt
 file_size: null
 
 # パス関連
-suffix: 'add'
+suffix: 'edgenext_xx_small'
 
 # モデル関連（共通部分）
-backbone: caformer_b36.sail_in22k_ft_in1k  #   swin_base_patch4_window7_224 hgnetv2_b2.ssld_stage2_ft_in1k
+backbone: edgenext_xx_small.in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
 drop_path_rate: 0
 
 # 一般設定
@@ -23,3 +24,63 @@ use_amp: True
 ema_decay: 0.99
 
 device: 'cuda'
+
+# Training task
+task: recon  # recon | fb_seg
+
+# 学習設定
+batch_size: 16
+steps_per_epoch: 2000
+lr: 1e-4
+lr_milestones: []
+momentum: 0.9
+weight_decay: 0.0001
+lr_gamma: 0.2
+lr_warmup_epochs: 3
+val_steps: 50
+epoch_block: 20
+num_block: 10
+print_freq: 100
+resume: null
+start_epoch: 0
+flip: True
+
+# 損失係数
+lambda_g1v: 1.0
+lambda_g2v: 1.0
+
+# 分散学習
+distributed: False
+local_rank: 0
+sync_bn: True
+world_size: 2
+dist_url: env://
+
+# ログ
+tensorboard: true
+
+snr:
+  pre_len: 100
+  post_len: 100
+  guard: 12
+  seed: 12345
+  passes_batch: 4
+  mask_ratio_for_eval: ${dataset.mask_ratio}
+  mask_noise_mode: ${dataset.mask_mode}
+  noise_std: ${dataset.mask_noise_std}
+
+dataset:
+  mask_ratio: 0.5
+  mask_mode: replace         # replace | add
+  mask_noise_std: 1
+  target_mode: ${task}
+  label_sigma: 5.0
+
+# Loss configuration
+loss:
+  shift_robust: true    # set true for replace-mode training
+  max_shift: 5
+  fb_seg:
+    type: kl   # "kl" or "mse"
+    tau: 1.0   # softmax 温度
+    eps: 0.01  # ラベルスムージング(0..0.05 程度)
