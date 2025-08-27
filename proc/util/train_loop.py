@@ -37,18 +37,23 @@ def train_one_epoch(
 	optimizer.zero_grad()
 	accum_loss = 0.0
 	for i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
-		x_masked, x_orig, mask_2d, meta = batch
+		x_masked, x_tgt, mask_or_none, meta = batch
 		start_time = time.time()
 		x_masked = x_masked.to(device, non_blocking=True)
-		x_orig = x_orig.to(device, non_blocking=True)
-		mask_2d = mask_2d.to(device, non_blocking=True)
+		x_tgt = x_tgt.to(device, non_blocking=True)
+		if mask_or_none is not None:
+			mask_or_none = mask_or_none.to(device, non_blocking=True)
+		meta = {
+			k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
+			for k, v in meta.items()
+		}
 		device_type = (
 			'cuda' if torch.cuda.is_available() and 'cuda' in str(device) else 'cpu'
 		)
 		with autocast(device_type=device_type, enabled=use_amp):
 			pred = model(x_masked)
 			total_loss = criterion(
-				pred, x_orig, mask=mask_2d, max_shift=max_shift, reduction='mean'
+				pred, x_tgt, mask=mask_or_none, fb_idx=meta["fb_idx"]
 			)
 			main_loss = total_loss / gradient_accumulation_steps
 		if scaler:
