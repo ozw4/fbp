@@ -1,10 +1,10 @@
 # %%
-import argparse
 import copy
 import datetime
 import os
 import random
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -37,13 +37,14 @@ from vis import visualize_pair_quartet
 
 def load_state_dict_excluding(
         model: torch.nn.Module,
-        ckpt_path: str,
+        state: dict | str,
         exclude_prefixes: tuple[str, ...] = ("seg_head",),
         strict: bool = False,
 ):
         """Load a checkpoint excluding parameters with given prefixes."""
-        sd = torch.load(ckpt_path, map_location="cpu")
-        sd = sd.get("model", sd)
+        if isinstance(state, str):
+                state = torch.load(state, map_location="cpu")
+        sd = state.get("model", state)
         sd = {k: v for k, v in sd.items() if k.split(".")[0] not in exclude_prefixes}
         missing, unexpected = model.load_state_dict(sd, strict=strict)
         print(
@@ -55,16 +56,8 @@ SEED = 42
 set_seed(SEED)
 rng = np.random.default_rng()
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--freeze-epochs", type=int, default=0)
-parser.add_argument("--unfreeze-steps", type=int, default=2)
-args, hydra_args = parser.parse_known_args()
-
-with initialize(config_path='configs', version_base='1.3'):
-        cfg = compose(config_name='base', overrides=hydra_args)
-
-cfg.freeze_epochs = args.freeze_epochs
-cfg.unfreeze_steps = args.unfreeze_steps
+with initialize(config_path="configs", version_base="1.3"):
+        cfg = compose(config_name="base", overrides=sys.argv[1:])
 
 if cfg.distributed:
 	torch.cuda.set_device(cfg.local_rank)
@@ -304,12 +297,16 @@ if cfg.distributed:
 	model_without_ddp = model.module
 
 if cfg.resume:
-        load_state_dict_excluding(model_without_ddp, cfg.resume)
-        checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-        cfg.start_epoch = checkpoint['epoch'] + 1
-        step = checkpoint['step']
+        checkpoint = torch.load(cfg.resume, map_location="cpu", weights_only=False)
+        if getattr(cfg, "resume_exclude_head", False):
+                prefixes = tuple(getattr(cfg, "resume_exclude_prefixes", ("seg_head",)))
+                load_state_dict_excluding(model_without_ddp, checkpoint, exclude_prefixes=prefixes)
+        else:
+                model_without_ddp.load_state_dict(checkpoint["model"], strict=False)
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+        cfg.start_epoch = checkpoint["epoch"] + 1
+        step = checkpoint["step"]
 
 if not cfg.distributed:
 	model = torch.compile(model, fullgraph=True, dynamic=False, mode='default')
