@@ -1,4 +1,5 @@
 # %%
+import argparse
 import copy
 import datetime
 import os
@@ -21,24 +22,49 @@ from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampl
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard.writer import SummaryWriter
 from util import (
-	MaskedSegyGather,
-	cover_all_traces_predict_chunked,
-	eval_synthe,
-	load_synth_pair,
-	segy_collate,
-	train_one_epoch,
-	val_one_epoch_snr,
-	worker_init_fn,
+        MaskedSegyGather,
+        cover_all_traces_predict_chunked,
+        eval_synthe,
+        load_synth_pair,
+        segy_collate,
+        train_one_epoch,
+        val_one_epoch_snr,
+        worker_init_fn,
 )
 from utils import WarmupCosineScheduler, set_seed
 from vis import visualize_pair_quartet
+
+
+def load_state_dict_excluding(
+        model: torch.nn.Module,
+        ckpt_path: str,
+        exclude_prefixes: tuple[str, ...] = ("seg_head",),
+        strict: bool = False,
+):
+        """Load a checkpoint excluding parameters with given prefixes."""
+        sd = torch.load(ckpt_path, map_location="cpu")
+        sd = sd.get("model", sd)
+        sd = {k: v for k, v in sd.items() if k.split(".")[0] not in exclude_prefixes}
+        missing, unexpected = model.load_state_dict(sd, strict=strict)
+        print(
+                f"[transfer] loaded {len(sd)} keys; missing={len(missing)} unexpected={len(unexpected)}"
+        )
+        return missing, unexpected
 
 SEED = 42
 set_seed(SEED)
 rng = np.random.default_rng()
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--freeze-epochs", type=int, default=0)
+parser.add_argument("--unfreeze-steps", type=int, default=2)
+args, hydra_args = parser.parse_known_args()
+
 with initialize(config_path='configs', version_base='1.3'):
-	cfg = compose(config_name='base')
+        cfg = compose(config_name='base', overrides=hydra_args)
+
+cfg.freeze_epochs = args.freeze_epochs
+cfg.unfreeze_steps = args.unfreeze_steps
 
 if cfg.distributed:
 	torch.cuda.set_device(cfg.local_rank)
@@ -241,11 +267,25 @@ epochs = cfg.epoch_block * cfg.num_block
 lr = cfg.lr * cfg.world_size
 step = 0
 
+base_lr = cfg.lr * cfg.world_size
+param_groups = [
+        {"params": model.seg_head.parameters(), "lr": base_lr},
+]
+if hasattr(model, "decoder"):
+        param_groups.append({"params": model.decoder.parameters(), "lr": base_lr * 0.5})
+
+enc_params = [
+        p
+        for n, p in model.named_parameters()
+        if not n.startswith("seg_head") and not n.startswith("decoder")
+]
+if enc_params:
+        param_groups.append({"params": enc_params, "lr": base_lr * 0.1})
+
 optimizer = torch.optim.AdamW(
-	model.parameters(),
-	lr=cfg.lr * cfg.world_size,
-	betas=(0.9, 0.999),
-	weight_decay=cfg.weight_decay,
+        param_groups,
+        betas=(0.9, 0.999),
+        weight_decay=cfg.weight_decay,
 )
 
 warmup_iters = cfg.lr_warmup_epochs * len(train_loader)
@@ -264,14 +304,12 @@ if cfg.distributed:
 	model_without_ddp = model.module
 
 if cfg.resume:
-	checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
-	model_without_ddp.load_state_dict(
-		checkpoint['model'], strict=False
-	)  # strict=False to allow partial loading
-	optimizer.load_state_dict(checkpoint['optimizer'])
-	lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-	cfg.start_epoch = checkpoint['epoch'] + 1
-	step = checkpoint['step']
+        load_state_dict_excluding(model_without_ddp, cfg.resume)
+        checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        cfg.start_epoch = checkpoint['epoch'] + 1
+        step = checkpoint['step']
 
 if not cfg.distributed:
 	model = torch.compile(model, fullgraph=True, dynamic=False, mode='default')
@@ -311,11 +349,13 @@ for epoch in range(cfg.start_epoch, epochs):
 		print_freq=cfg.print_freq,
 		writer=train_writer,
 		use_amp=use_amp,
-		scaler=scaler,
-		ema=ema,
-		gradient_accumulation_steps=1,
-		step=step,
-	)
+                scaler=scaler,
+                ema=ema,
+                gradient_accumulation_steps=1,
+                step=step,
+                freeze_epochs=cfg.freeze_epochs,
+                unfreeze_steps=cfg.unfreeze_steps,
+        )
 	eval_model = ema.module if ema else model
 
 	if task == 'recon':
