@@ -177,48 +177,59 @@ class MaskedSegyGather(Dataset):
 				selected_indices = indices
 				pad_len = 128 - n_total
 			fb_subset = fb[selected_indices]
-			if pad_len > 0:
-				fb_subset = np.concatenate(
-					[fb_subset, np.zeros(pad_len, dtype=fb_subset.dtype)]
-				)
-			pick_ratio = np.count_nonzero(fb_subset > 0) / len(fb_subset)
-			if pick_ratio >= self.pick_ratio:
-				break
-		x = mmap[selected_indices].astype(np.float32, copy=False)
-		if pad_len > 0:
-			pad_tr = np.zeros((pad_len, x.shape[1]), dtype=np.float32)
-			x = np.concatenate([x, pad_tr], axis=0)
-		x = x - np.mean(x, axis=1, keepdims=True)
-		x = x / (np.std(x, axis=1, keepdims=True) + 1e-10)
-		if self.flip and random.random() < 0.5:
-			x = np.flip(x, axis=0).copy()
-			fb_subset = fb_subset[::-1].copy()
-		factor = 1.0
-		if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
-			factor = random.uniform(*self.augment_time_range)
-			frac = Fraction(factor).limit_denominator(128)
-			up, down = frac.numerator, frac.denominator
-			H_tmp = x.shape[0]
-			x = np.stack(
-				[resample_poly(x[h], up, down, padtype='line') for h in range(H_tmp)],
-				axis=0,
-			)
-		x, start = self._fit_time_len(x)
-		did_space = False
-		f_h = 1.0
-		if self.augment_space_prob > 0 and random.random() < self.augment_space_prob:
-			f_h = random.uniform(*self.augment_space_range)
-			x = _spatial_stretch_sameH(x, f_h)  # 既存行
-			did_space = True
-		if self.augment_freq_prob > 0 and random.random() < self.augment_freq_prob:
-			x = _apply_freq_augment(
-				x,
-				self.augment_freq_kinds,
-				self.augment_freq_band,
-				self.augment_freq_width,
-				self.augment_freq_roll,
-				self.augment_freq_restandardize,
-			)
+                        if pad_len > 0:
+                                fb_subset = np.concatenate(
+                                        [fb_subset, np.zeros(pad_len, dtype=fb_subset.dtype)]
+                                )
+                        offsets_full = info['offsets']
+                        off_subset = offsets_full[selected_indices].astype(np.float32, copy=False)
+                        if pad_len > 0:
+                                off_subset = np.concatenate(
+                                        [off_subset, np.zeros(pad_len, dtype=np.float32)]
+                                )
+                        pick_ratio = np.count_nonzero(fb_subset > 0) / len(fb_subset)
+                        if pick_ratio >= self.pick_ratio:
+                                break
+                x = mmap[selected_indices].astype(np.float32, copy=False)
+                if pad_len > 0:
+                        pad_tr = np.zeros((pad_len, x.shape[1]), dtype=np.float32)
+                        x = np.concatenate([x, pad_tr], axis=0)
+                x = x - np.mean(x, axis=1, keepdims=True)
+                x = x / (np.std(x, axis=1, keepdims=True) + 1e-10)
+                if self.flip and random.random() < 0.5:
+                        x = np.flip(x, axis=0).copy()
+                        fb_subset = fb_subset[::-1].copy()
+                        off_subset = off_subset[::-1].copy()
+                factor = 1.0
+                if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
+                        factor = random.uniform(*self.augment_time_range)
+                        frac = Fraction(factor).limit_denominator(128)
+                        up, down = frac.numerator, frac.denominator
+                        H_tmp = x.shape[0]
+                        x = np.stack(
+                                [resample_poly(x[h], up, down, padtype='line') for h in range(H_tmp)],
+                                axis=0,
+                        )
+                x, start = self._fit_time_len(x)
+                did_space = False
+                f_h = 1.0
+                if self.augment_space_prob > 0 and random.random() < self.augment_space_prob:
+                        f_h = random.uniform(*self.augment_space_range)
+                        x = _spatial_stretch_sameH(x, f_h)  # 既存行
+                        off_subset = _spatial_stretch_sameH(off_subset[:, None], f_h)[:, 0].astype(
+                                np.float32,
+                                copy=False,
+                        )
+                        did_space = True
+                if self.augment_freq_prob > 0 and random.random() < self.augment_freq_prob:
+                        x = _apply_freq_augment(
+                                x,
+                                self.augment_freq_kinds,
+                                self.augment_freq_band,
+                                self.augment_freq_width,
+                                self.augment_freq_roll,
+                                self.augment_freq_restandardize,
+                        )
 		fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
 		invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
 		fb_idx_win[invalid] = -1
@@ -259,17 +270,19 @@ class MaskedSegyGather(Dataset):
 				target = _spatial_stretch_sameH(target, f_h)
 
 			target_t = torch.from_numpy(target)[None, ...]
-		x_t = torch.from_numpy(x)[None, ...]
-		xm = torch.from_numpy(x_masked)[None, ...]
-		fb_idx_t = torch.from_numpy(fb_idx_win)
-		sample = {
-			'masked': xm,
-			'original': x_t,
-			'fb_idx': fb_idx_t,
-			'key_name': key_name,
-			'indices': selected_indices,
-			'file_path': info['path'],
-		}
+                x_t = torch.from_numpy(x)[None, ...]
+                xm = torch.from_numpy(x_masked)[None, ...]
+                fb_idx_t = torch.from_numpy(fb_idx_win)
+                off_t = torch.from_numpy(off_subset)
+                sample = {
+                        'masked': xm,
+                        'original': x_t,
+                        'fb_idx': fb_idx_t,
+                        'offsets': off_t,
+                        'key_name': key_name,
+                        'indices': selected_indices,
+                        'file_path': info['path'],
+                }
 		if self.target_mode == 'recon':
 			sample['mask_indices'] = mask_idx
 		else:
