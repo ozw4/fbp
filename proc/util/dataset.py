@@ -1,4 +1,5 @@
 import random
+import warnings
 from fractions import Fraction
 from typing import Literal
 
@@ -85,6 +86,19 @@ class MaskedSegyGather(Dataset):
 			chno_key_to_indices = self._build_index_map(chno_values)
 			chno_unique_keys = list(chno_key_to_indices.keys())
 			dt = int(f.bin[segyio.BinField.Interval]) / 1e3
+			try:
+				offsets = f.attributes(segyio.TraceField.offset)[:]
+				offsets = np.asarray(offsets, dtype=np.float32)
+				if len(offsets) != f.tracecount:
+					warnings.warn(
+						f'offset length mismatch in {segy_path}',
+					)
+					offsets = np.zeros(f.tracecount, dtype=np.float32)
+			except Exception as e:
+				warnings.warn(
+					f'failed to read offsets from {segy_path}: {e}',
+				)
+				offsets = np.zeros(f.tracecount, dtype=np.float32)
 			fb = np.load(fb_path)
 			self.file_infos.append(
 				dict(
@@ -101,6 +115,7 @@ class MaskedSegyGather(Dataset):
 					dt=dt,
 					segy_obj=f,
 					fb=fb,
+						offsets=offsets,
 				)
 			)
 
