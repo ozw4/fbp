@@ -205,7 +205,7 @@ class MaskedSegyGather(Dataset):
 				self.augment_freq_restandardize,
 			)
 		fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
-		invalid = (fb_idx_win < 0) | (fb_idx_win >= self.target_len)
+		invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
 		fb_idx_win[invalid] = -1
 		if self.target_mode == 'recon':
 			H = x.shape[0]
