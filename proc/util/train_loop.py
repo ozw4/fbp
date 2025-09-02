@@ -127,7 +127,7 @@ def train_one_epoch(
 		with autocast(device_type=device_type, enabled=use_amp):
 			pred = model(x_masked)
 			total_loss = criterion(
-				pred, x_tgt, mask=mask_or_none, fb_idx=meta['fb_idx']
+				pred, x_tgt, mask=mask_or_none, fb_idx=meta['fb_idx'], offsets=meta['offsets']
 			)
 			main_loss = total_loss / gradient_accumulation_steps
 		if scaler:
