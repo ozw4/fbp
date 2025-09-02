@@ -24,11 +24,13 @@ def segy_collate(batch):
                 mask_indices_list = [b.get('mask_indices', []) for b in batch]
                 mask = make_mask_2d(mask_indices_list, H, W, device=x_masked.device)
         fb_idx = torch.stack([b['fb_idx'] for b in batch], dim=0)
+        offsets = torch.stack([b['offsets'] for b in batch], dim=0)
         meta = {
                 'file_path': [b['file_path'] for b in batch],
                 'key_name': [b['key_name'] for b in batch],
                 'indices': [b['indices'] for b in batch],
                 'mask_indices': [b.get('mask_indices', []) for b in batch],
                 'fb_idx': fb_idx,
+                'offsets': offsets,
         }
         return x_masked, teacher, mask, meta
