@@ -189,9 +189,12 @@ class MaskedSegyGather(Dataset):
 				axis=0,
 			)
 		x, start = self._fit_time_len(x)
+		did_space = False
+		f_h = 1.0
 		if self.augment_space_prob > 0 and random.random() < self.augment_space_prob:
 			f_h = random.uniform(*self.augment_space_range)
-			x = _spatial_stretch_sameH(x, f_h)
+			x = _spatial_stretch_sameH(x, f_h)  # 既存行
+			did_space = True
 		if self.augment_freq_prob > 0 and random.random() < self.augment_freq_prob:
 			x = _apply_freq_augment(
 				x,
@@ -225,16 +228,20 @@ class MaskedSegyGather(Dataset):
 		if self.target_mode == 'fb_seg':
 			sigma = max(float(self.label_sigma), 1e-6)
 			H_t, W_t = x.shape
-			t = np.arange(W_t, dtype=np.float32)[None, :]  # (1, W)
+			t = np.arange(W_t, dtype=np.float32)[None, :]
 			target = np.zeros((H_t, W_t), dtype=np.float32)
 
 			idx = fb_idx_win
 			valid = idx >= 0
 			if valid.any():
-				idxv = idx[valid].astype(np.float32)[:, None]  # (Hv, 1)
-				g = np.exp(-0.5 * ((t - idxv) / sigma) ** 2)  # (Hv, W)
-				g /= g.max(axis=1, keepdims=True) + 1e-12  # 安全にピーク=1
+				idxv = idx[valid].astype(np.float32)[:, None]
+				g = np.exp(-0.5 * ((t - idxv) / sigma) ** 2)
+				g /= g.max(axis=1, keepdims=True) + 1e-12
 				target[valid] = g
+
+			# ② ターゲットにも同じ空間ストレッチを適用
+			if did_space:
+				target = _spatial_stretch_sameH(target, f_h)
 
 			target_t = torch.from_numpy(target)[None, ...]
 		x_t = torch.from_numpy(x)[None, ...]
