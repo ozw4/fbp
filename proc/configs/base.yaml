@@ -107,3 +107,6 @@ loss:
     type: kl   # "kl" or "mse"
     tau: 1.0   # softmax 温度
     eps: 0.02  # ラベルスムージング(0..0.05 程度)
+    smooth_lambda: 0.0      # 0 => disabled (backward compatible)
+    smooth_weight: inv      # inv | exp
+    smooth_scale: 1.0       # inv: denominator epsilon; exp: inverse temperature
