@@ -212,6 +212,9 @@ def make_fb_seg_criterion(cfg_fb):
         if fb_type == 'kl':
                 tau = float(getattr(cfg_fb, 'tau', 1.0))
                 eps = float(getattr(cfg_fb, 'eps', 0.0))
+                smooth_lambda = float(getattr(cfg_fb, 'smooth_lambda', 0.0))
+                smooth_weight = str(getattr(cfg_fb, 'smooth_weight', 'inv'))
+                smooth_scale = float(getattr(cfg_fb, 'smooth_scale', 1.0))
 
                 def _criterion(
                         pred: torch.Tensor,
@@ -219,12 +222,44 @@ def make_fb_seg_criterion(cfg_fb):
                         *,
                         fb_idx: torch.Tensor,
                         mask=None,
+                        offsets=None,
                         **kwargs,
                 ) -> torch.Tensor:
                         valid_mask = (fb_idx >= 0).to(pred.dtype)
-                        return fb_seg_kl_loss(
+                        base = fb_seg_kl_loss(
                                 pred, target, valid_mask=valid_mask, tau=tau, eps=eps
                         )
+                        if smooth_lambda <= 0 or offsets is None:
+                                return base
+
+                        logit = pred.squeeze(1)
+                        prob = torch.softmax(logit / tau, dim=-1)
+                        W = prob.size(-1)
+                        t = torch.arange(W, device=prob.device, dtype=prob.dtype)
+                        pos = (prob * t).sum(dim=-1)
+
+                        dpos = pos[:, 1:] - pos[:, :-1]
+                        doff = (
+                                (offsets[:, 1:] - offsets[:, :-1]).abs().to(dpos.dtype)
+                                + 1e-12
+                        )
+                        scale = doff.median(dim=1, keepdim=True).values.clamp_min(1.0)
+
+                        if smooth_weight == "inv":
+                                w = 1.0 / (doff / scale + smooth_scale)
+                        else:
+                                w = torch.exp(
+                                        -(doff / scale) / max(smooth_scale, 1e-6)
+                                )
+
+                        vpair = (
+                                valid_mask[:, 1:] * valid_mask[:, :-1]
+                        ).to(dpos.dtype)
+                        num = (w * vpair * (dpos ** 2)).sum()
+                        den = (w * vpair).sum().clamp_min(1.0)
+                        smooth = num / den
+
+                        return base + smooth_lambda * smooth
 
                 return _criterion
 
