@@ -4,15 +4,15 @@ defaults:
 
 # データセット
 data_root : '/home/dcuser/data/ActiveSeisField/'
-train_field_list: train_field_list.txt
-valid_field_list: train_field_list.txt
+train_field_list: train_field_list_wotstkres.txt
+valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'edgenext_xx_small'
+suffix: 'edgenext_small.usi_in1k_finetune_augtime'
 
 # モデル関連（共通部分）
-backbone: edgenext_xx_small.in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
+backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
 drop_path_rate: 0
 
 # 一般設定
@@ -26,29 +26,28 @@ ema_decay: 0.99
 device: 'cuda'
 
 # Training task
-task: recon  # recon | fb_seg
+task: fb_seg  # recon | fb_seg
 
 # 学習設定
 batch_size: 16
 steps_per_epoch: 2000
-lr: 1e-4
+lr: 1e-5
 lr_milestones: []
 momentum: 0.9
 weight_decay: 0.0001
 lr_gamma: 0.2
-lr_warmup_epochs: 3
+lr_warmup_epochs: 10
 val_steps: 50
 epoch_block: 20
 num_block: 10
 print_freq: 100
-resume: null
+resume:   /workspace/proc/result/recon/train_field_list_edgenext_small/checkpoint.pth
 start_epoch: 0
-flip: True
 
 # Freeze schedule
-freeze_epochs: 0
+freeze_epochs: 2
 unfreeze_steps: 2
-resume_exclude_head: false  # skip loading head weights when resuming
+resume_exclude_head: true  # skip loading head weights when resuming
 resume_exclude_prefixes:
   - seg_head
 
@@ -82,6 +81,23 @@ dataset:
   mask_noise_std: 1
   target_mode: ${task}
   label_sigma: 5.0
+  flip: True
+  augment:
+    time:
+      prob: 0.3
+      range: [0.8, 1.2]
+    space:
+        prob: 0
+        range: [0.8, 1.2]
+    freq:
+      prob: 0
+      kinds: [bandpass, lowpass, highpass]
+      band:  [0.05, 0.45]
+      width: [0.12, 0.35]
+      roll:  0.02
+      restandardize: true
+
+
 
 # Loss configuration
 loss:
@@ -90,4 +106,4 @@ loss:
   fb_seg:
     type: kl   # "kl" or "mse"
     tau: 1.0   # softmax 温度
-    eps: 0.01  # ラベルスムージング(0..0.05 程度)
+    eps: 0.02  # ラベルスムージング(0..0.05 程度)

@@ -33,6 +33,25 @@ from util import (
 from utils import WarmupCosineScheduler, set_seed
 from vis import visualize_pair_quartet
 
+
+def load_state_dict_excluding(
+	model: torch.nn.Module,
+	state: dict | str,
+	exclude_prefixes: tuple[str, ...] = ('seg_head',),
+	strict: bool = False,
+):
+	"""Load a checkpoint excluding parameters with given prefixes."""
+	if isinstance(state, str):
+		state = torch.load(state, map_location='cpu', weights_only=False)
+	sd = state.get('model_ema', state)
+	sd = {k: v for k, v in sd.items() if k.split('.')[0] not in exclude_prefixes}
+	missing, unexpected = model.load_state_dict(sd, strict=strict)
+	print(
+		f'[transfer] loaded {len(sd)} keys; missing={len(missing)} unexpected={len(unexpected)}'
+	)
+	return missing, unexpected
+
+
 SEED = 42
 set_seed(SEED)
 rng = np.random.default_rng()
@@ -103,17 +122,17 @@ train_dataset = MaskedSegyGather(
 	mask_noise_std=cfg.dataset.mask_noise_std,
 	target_mode=cfg.dataset.target_mode,
 	label_sigma=cfg.dataset.label_sigma,
-	flip=True,
-	augment_time_prob=0.3,
-	augment_time_range=(0.8, 1.2),
-	augment_space_prob=0.3,
-	augment_space_range=(0.8, 1.2),
-	augment_freq_prob=0.5,  # ← 追加
-	augment_freq_kinds=('bandpass', 'lowpass', 'highpass'),
-	augment_freq_band=(0.05, 0.45),
-	augment_freq_width=(0.12, 0.35),
-	augment_freq_roll=0.02,
-	augment_freq_restandardize=True,
+	flip=cfg.dataset.flip,
+	augment_time_prob=cfg.dataset.augment.time.prob,
+	augment_time_range=tuple(cfg.dataset.augment.time.range),
+	augment_space_prob=cfg.dataset.augment.space.prob,
+	augment_space_range=tuple(cfg.dataset.augment.space.range),
+	augment_freq_prob=cfg.dataset.augment.freq.prob,
+	augment_freq_kinds=tuple(cfg.dataset.augment.freq.kinds),
+	augment_freq_band=tuple(cfg.dataset.augment.freq.band),
+	augment_freq_width=tuple(cfg.dataset.augment.freq.width),
+	augment_freq_roll=cfg.dataset.augment.freq.roll,
+	augment_freq_restandardize=cfg.dataset.augment.freq.restandardize,
 )
 valid_dataset = MaskedSegyGather(
 	valid_segy_files,
@@ -241,9 +260,23 @@ epochs = cfg.epoch_block * cfg.num_block
 lr = cfg.lr * cfg.world_size
 step = 0
 
+base_lr = cfg.lr * cfg.world_size
+param_groups = [
+	{'params': model.seg_head.parameters(), 'lr': base_lr},
+]
+if hasattr(model, 'decoder'):
+	param_groups.append({'params': model.decoder.parameters(), 'lr': base_lr * 0.5})
+
+enc_params = [
+	p
+	for n, p in model.named_parameters()
+	if not n.startswith('seg_head') and not n.startswith('decoder')
+]
+if enc_params:
+	param_groups.append({'params': enc_params, 'lr': base_lr * 0.1})
+
 optimizer = torch.optim.AdamW(
-	model.parameters(),
-	lr=cfg.lr * cfg.world_size,
+	param_groups,
 	betas=(0.9, 0.999),
 	weight_decay=cfg.weight_decay,
 )
@@ -263,15 +296,42 @@ if cfg.distributed:
 	model = DistributedDataParallel(model, device_ids=[cfg.local_rank])
 	model_without_ddp = model.module
 
+transfer_loaded = False
 if cfg.resume:
+	transfer_loaded = True
 	checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
-	model_without_ddp.load_state_dict(
-		checkpoint['model'], strict=False
-	)  # strict=False to allow partial loading
-	optimizer.load_state_dict(checkpoint['optimizer'])
-	lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-	cfg.start_epoch = checkpoint['epoch'] + 1
-	step = checkpoint['step']
+
+	# 1) モデル重みを読み込む（必要ならヘッドを除外）
+	if getattr(cfg, 'resume_exclude_head', False):
+		prefixes = tuple(getattr(cfg, 'resume_exclude_prefixes', ('seg_head',)))
+		load_state_dict_excluding(
+			model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
+		)
+	else:
+		model_state = checkpoint.get('model_ema', checkpoint)
+		model_without_ddp.load_state_dict(model_state, strict=False)
+
+	# 2) optimizer / lr_scheduler は基本読まない（明示フラグがある時のみ試す）
+	if getattr(cfg, 'resume_load_optim', False):
+		try:
+			opt_sd = checkpoint['optimizer']
+			if len(opt_sd['param_groups']) == len(optimizer.param_groups):
+				optimizer.load_state_dict(opt_sd)
+				if 'lr_scheduler' in checkpoint:
+					lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+				cfg.start_epoch = int(checkpoint.get('epoch', -1)) + 1
+				step = int(checkpoint.get('step', 0))
+			else:
+				raise ValueError('param_groups mismatch')
+		except Exception as e:
+			print(
+				f'[resume] skip optimizer/scheduler: {e} -> reinit and restart from epoch 0'
+			)
+	else:
+		print('[resume] loaded model weights only (optimizer/scheduler reinitialized)')
+
+# 3) 段階解凍のガード用フラグ
+model._transfer_loaded = transfer_loaded
 
 if not cfg.distributed:
 	model = torch.compile(model, fullgraph=True, dynamic=False, mode='default')
@@ -315,6 +375,8 @@ for epoch in range(cfg.start_epoch, epochs):
 		ema=ema,
 		gradient_accumulation_steps=1,
 		step=step,
+		freeze_epochs=cfg.freeze_epochs,
+		unfreeze_steps=cfg.unfreeze_steps,
 	)
 	eval_model = ema.module if ema else model
 
@@ -424,7 +486,7 @@ for epoch in range(cfg.start_epoch, epochs):
 			visualize=True,
 			writer=valid_writer,
 			epoch=epoch,
-			viz_batches=(0, 1, 2),
+			viz_batches=(0, 1, 2, 3, 4),
 		)
 		if utils.is_main_process():
 			valid_writer.add_scalar('fbseg/hit_at_0', fb_metrics['hit@0'], epoch)
