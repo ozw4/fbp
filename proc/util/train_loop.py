@@ -107,17 +107,21 @@ def train_one_epoch(
 	metric_logger.add_meter(
 		'samples/s', utils.SmoothedValue(window_size=10, fmt='{value:.3f}')
 	)
-	metric_logger.add_meter(
-		'loss_base', utils.SmoothedValue(window_size=10, fmt='{value:.4f}')
-	)
-	metric_logger.add_meter(
-		'loss_smooth', utils.SmoothedValue(window_size=10, fmt='{value:.4f}')
-	)
+        metric_logger.add_meter(
+                'loss_base', utils.SmoothedValue(window_size=10, fmt='{value:.4f}')
+        )
+        metric_logger.add_meter(
+                'loss_smooth', utils.SmoothedValue(window_size=10, fmt='{value:.4f}')
+        )
+        metric_logger.add_meter(
+                'loss_curv', utils.SmoothedValue(window_size=10, fmt='{value:.4f}')
+        )
 	header = f'Epoch: [{epoch}]'
 	optimizer.zero_grad()
 	accum_loss = 0.0
-	accum_loss_base = 0.0
-	accum_loss_smooth = 0.0
+        accum_loss_base = 0.0
+        accum_loss_smooth = 0.0
+        accum_loss_curv = 0.0
 	for i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
 		x_masked, x_tgt, mask_or_none, meta = batch
 		start_time = time.time()
@@ -151,12 +155,15 @@ def train_one_epoch(
 		else:
 			main_loss.backward()
 		accum_loss += main_loss.item()
-		lb = loss_logs.get('loss_base') if loss_logs else None
-		ls = loss_logs.get('loss_smooth') if loss_logs else None
-		if lb is not None:
-			accum_loss_base += lb.item() / gradient_accumulation_steps
-		if ls is not None:
-			accum_loss_smooth += ls.item() / gradient_accumulation_steps
+                lb = loss_logs.get('base') if loss_logs else None
+                ls = loss_logs.get('smooth') if loss_logs else None
+                lc = loss_logs.get('curv') if loss_logs else None
+                if lb is not None:
+                        accum_loss_base += lb.item() / gradient_accumulation_steps
+                if ls is not None:
+                        accum_loss_smooth += ls.item() / gradient_accumulation_steps
+                if lc is not None:
+                        accum_loss_curv += lc.item() / gradient_accumulation_steps
 		if (i + 1) % gradient_accumulation_steps == 0:
 			if scaler:
 				scaler.unscale_(optimizer)
@@ -173,18 +180,21 @@ def train_one_epoch(
 			metric_logger.meters['samples/s'].update(
 				x_masked.shape[0] / (time.time() - start_time)
 			)
-			metric_logger.update(loss_base=accum_loss_base)
-			metric_logger.update(loss_smooth=accum_loss_smooth)
-			if writer:
-				writer.add_scalar('loss', accum_loss, step)
-				writer.add_scalar('lr', optimizer.param_groups[0]['lr'], step)
-				writer.add_scalar('loss_base', accum_loss_base, step)
-				writer.add_scalar('loss_smooth', accum_loss_smooth, step)
-			step += 1
-			lr_scheduler.step()
-			accum_loss = 0.0
-			accum_loss_base = 0.0
-			accum_loss_smooth = 0.0
+                        metric_logger.update(loss_base=accum_loss_base)
+                        metric_logger.update(loss_smooth=accum_loss_smooth)
+                        metric_logger.update(loss_curv=accum_loss_curv)
+                        if writer:
+                                writer.add_scalar('loss', accum_loss, step)
+                                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], step)
+                                writer.add_scalar('loss_base', accum_loss_base, step)
+                                writer.add_scalar('loss_smooth', accum_loss_smooth, step)
+                                writer.add_scalar('loss_curv', accum_loss_curv, step)
+                        step += 1
+                        lr_scheduler.step()
+                        accum_loss = 0.0
+                        accum_loss_base = 0.0
+                        accum_loss_smooth = 0.0
+                        accum_loss_curv = 0.0
 
 	return step
 

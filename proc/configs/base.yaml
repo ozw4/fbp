@@ -110,3 +110,4 @@ loss:
     smooth_lambda: 0.05      # 0 => disabled (backward compatible)
     smooth_weight: inv      # inv | exp
     smooth_scale: 1.0       # inv: denominator epsilon; exp: inverse temperature
+    smooth2_lambda: 0.0   # curvature penalty weight; 0.0 keeps current behavior
