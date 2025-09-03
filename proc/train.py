@@ -134,19 +134,35 @@ train_dataset = MaskedSegyGather(
 	augment_freq_roll=cfg.dataset.augment.freq.roll,
 	augment_freq_restandardize=cfg.dataset.augment.freq.restandardize,
 )
-valid_dataset = MaskedSegyGather(
-	valid_segy_files,
-	valid_fb_files,
-	mask_ratio=cfg.dataset.mask_ratio,
-	mask_mode=cfg.dataset.mask_mode,
-	mask_noise_std=cfg.dataset.mask_noise_std,
-	target_mode=cfg.dataset.target_mode,
-	label_sigma=cfg.dataset.label_sigma,
-	flip=False,
-	augment_time_prob=0.0,
-	augment_space_prob=0.0,
-	augment_freq_prob=0.0,
-)
+
+if task == 'fb_seg':
+	valid_dataset = MaskedSegyGather(
+		valid_segy_files,
+		valid_fb_files,
+		mask_ratio=0,
+		mask_mode=cfg.dataset.mask_mode,
+		mask_noise_std=0,
+		target_mode=cfg.dataset.target_mode,
+		label_sigma=cfg.dataset.label_sigma,
+		flip=False,
+		augment_time_prob=0.0,
+		augment_space_prob=0.0,
+		augment_freq_prob=0.0,
+	)
+elif task == 'recon':
+	valid_dataset = MaskedSegyGather(
+		valid_segy_files,
+		valid_fb_files,
+		mask_ratio=cfg.dataset.mask_ratio,
+		mask_mode=cfg.dataset.mask_mode,
+		mask_noise_std=cfg.dataset.mask_noise_std,
+		target_mode=cfg.dataset.target_mode,
+		label_sigma=cfg.dataset.label_sigma,
+		flip=False,
+		augment_time_prob=0.0,
+		augment_space_prob=0.0,
+		augment_freq_prob=0.0,
+	)
 val_src = copy.copy(valid_dataset)  # file_infos を共有
 val_src.flip = False  # ここだけ無反転で取りたい場合
 
