@@ -233,24 +233,20 @@ class MaskedSegyGather(Dataset):
 		fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
 		invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
 		fb_idx_win[invalid] = -1
-		if self.target_mode == 'recon':
-			H = x.shape[0]
-			num_mask = int(self.mask_ratio * H)
-			mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
-			x_masked = x.copy()
-			if num_mask > 0:
-				noise = np.random.normal(
-					0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
-				)
-				if self.mask_mode == 'replace':
-					x_masked[mask_idx] = noise
-				elif self.mask_mode == 'add':
-					x_masked[mask_idx] += noise
-				else:
-					raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
-		else:
-			mask_idx = []
-			x_masked = x.copy()
+		H = x.shape[0]
+		num_mask = int(self.mask_ratio * H)
+		mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
+		x_masked = x.copy()
+		if num_mask > 0:
+			noise = np.random.normal(
+				0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
+			)
+			if self.mask_mode == 'replace':
+				x_masked[mask_idx] = noise
+			elif self.mask_mode == 'add':
+				x_masked[mask_idx] += noise
+			else:
+				raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
 		if self.target_mode == 'fb_seg':
 			sigma = max(float(self.label_sigma), 1e-6)
 			H_t, W_t = x.shape
@@ -279,12 +275,11 @@ class MaskedSegyGather(Dataset):
 			'original': x_t,
 			'fb_idx': fb_idx_t,
 			'offsets': off_t,
+			'mask_indices': mask_idx,
 			'key_name': key_name,
 			'indices': selected_indices,
 			'file_path': info['path'],
 		}
-		if self.target_mode == 'recon':
-			sample['mask_indices'] = mask_idx
-		else:
+		if self.target_mode == 'fb_seg':
 			sample['target'] = target_t
 		return sample
