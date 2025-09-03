@@ -4,7 +4,7 @@ defaults:
 
 # データセット
 data_root : '/home/dcuser/data/ActiveSeisField/'
-train_field_list: train_field_list_tstkres.txt
+train_field_list: train_field_list_wotstkres.txt
 valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
