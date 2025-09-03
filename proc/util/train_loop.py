@@ -138,13 +138,14 @@ def train_one_epoch(
 		)
 		with autocast(device_type=device_type, enabled=use_amp):
 			pred = model(x_masked)
-			out = criterion(
-				pred,
-				x_tgt,
-				mask=mask_or_none,
-				fb_idx=meta['fb_idx'],
-				offsets=meta.get('offsets'),
-			)
+                        out = criterion(
+                                pred,
+                                x_tgt,
+                                mask=mask_or_none,
+                                fb_idx=meta['fb_idx'],
+                                offsets=meta.get('offsets'),
+                                dt_sec=meta['dt_sec'],
+                        )
 			if isinstance(out, tuple):
 				total_loss, loss_logs = out
 			else:

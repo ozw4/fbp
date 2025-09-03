@@ -224,6 +224,7 @@ def make_fb_seg_criterion(cfg_fb):
                         fb_idx: torch.Tensor,
                         mask=None,
                         offsets=None,
+                        dt_sec: torch.Tensor | None = None,
                         **kwargs,
                 ) -> torch.Tensor | tuple[torch.Tensor, dict]:
                         valid_mask = (fb_idx >= 0).to(pred.dtype)
@@ -231,7 +232,11 @@ def make_fb_seg_criterion(cfg_fb):
                                 pred, target, valid_mask=valid_mask, tau=tau, eps=eps
                         )
 
-                        if ((smooth_lambda <= 0 and smooth2_lambda <= 0) or offsets is None):
+                        if (
+                                (smooth_lambda <= 0 and smooth2_lambda <= 0)
+                                or offsets is None
+                                or dt_sec is None
+                        ):
                                 return base, {
                                         'base': base.detach(),
                                         'smooth': base.new_tensor(0.0),
@@ -243,6 +248,8 @@ def make_fb_seg_criterion(cfg_fb):
                         W = prob.size(-1)
                         t = torch.arange(W, device=prob.device, dtype=prob.dtype)
                         pos = (prob * t).sum(dim=-1)
+                        dt_sec = dt_sec.to(pos.dtype).to(pos.device).clamp_min(1e-9)
+                        pos_t = pos * dt_sec[:, None]
 
                         dx = (
                                 (offsets[:, 1:] - offsets[:, :-1]).abs().to(pos.dtype).clamp_min(1e-6)
@@ -250,7 +257,7 @@ def make_fb_seg_criterion(cfg_fb):
 
                         smooth = base.new_tensor(0.0)
                         if smooth_lambda > 0:
-                                dpos = pos[:, 1:] - pos[:, :-1]
+                                dpos = pos_t[:, 1:] - pos_t[:, :-1]
                                 scale = dx.median(dim=1, keepdim=True).values.clamp_min(1.0)
                                 if smooth_weight == "inv":
                                         w = 1.0 / (dx / scale + smooth_scale)
@@ -265,7 +272,8 @@ def make_fb_seg_criterion(cfg_fb):
 
                         loss_curv = base.new_tensor(0.0)
                         if smooth2_lambda > 0:
-                                s = (pos[:, 1:] - pos[:, :-1]) / dx
+                                dpos = pos_t[:, 1:] - pos_t[:, :-1]
+                                s = dpos / dx
                                 dx_mid = 0.5 * (dx[:, 1:] + dx[:, :-1]).clamp_min(1e-6)
                                 curv = (s[:, 1:] - s[:, :-1]) / dx_mid
                                 v3 = (
