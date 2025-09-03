@@ -107,3 +107,4 @@ loss:
     type: kl   # "kl" or "mse"
     tau: 1.0   # softmax 温度
     eps: 0.02  # ラベルスムージング(0..0.05 程度)
+    smooth2_lambda: 0.0   # curvature penalty weight; 0.0 keeps current behavior
