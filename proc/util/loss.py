@@ -224,13 +224,17 @@ def make_fb_seg_criterion(cfg_fb):
                         mask=None,
                         offsets=None,
                         **kwargs,
-                ) -> torch.Tensor:
+                ) -> torch.Tensor | tuple[torch.Tensor, dict]:
                         valid_mask = (fb_idx >= 0).to(pred.dtype)
                         base = fb_seg_kl_loss(
                                 pred, target, valid_mask=valid_mask, tau=tau, eps=eps
                         )
                         if smooth_lambda <= 0 or offsets is None:
-                                return base
+                                return base, {
+                                        'loss_base': base.detach(),
+                                        'loss_smooth': base.new_tensor(0.0),
+                                        'smooth_raw': base.new_tensor(0.0),
+                                }
 
                         logit = pred.squeeze(1)
                         prob = torch.softmax(logit / tau, dim=-1)
@@ -259,7 +263,12 @@ def make_fb_seg_criterion(cfg_fb):
                         den = (w * vpair).sum().clamp_min(1.0)
                         smooth = num / den
 
-                        return base + smooth_lambda * smooth
+                        total = base + smooth_lambda * smooth
+                        return total, {
+                                'loss_base': base.detach(),
+                                'loss_smooth': (smooth_lambda * smooth).detach(),
+                                'smooth_raw': smooth.detach(),
+                        }
 
                 return _criterion
 
