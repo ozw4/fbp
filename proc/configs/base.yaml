@@ -4,12 +4,12 @@ defaults:
 
 # データセット
 data_root : '/home/dcuser/data/ActiveSeisField/'
-train_field_list: train_field_list_wotstkres.txt
+train_field_list: train_field_list_tstkres.txt
 valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'edgenext_small.usi_in1k_finetune_augspace'
+suffix: 'edgenext_small.usi_in1k_finetune_augspace01_offs-inv-l005-s1'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -23,7 +23,7 @@ use_ema: True
 use_amp: True
 ema_decay: 0.99
 
-device: 'cuda'
+device: 'cuda:1'
 
 # Training task
 task: fb_seg  # recon | fb_seg
@@ -107,6 +107,6 @@ loss:
     type: kl   # "kl" or "mse"
     tau: 1.0   # softmax 温度
     eps: 0.02  # ラベルスムージング(0..0.05 程度)
-    smooth_lambda: 0.0      # 0 => disabled (backward compatible)
+    smooth_lambda: 0.05      # 0 => disabled (backward compatible)
     smooth_weight: inv      # inv | exp
     smooth_scale: 1.0       # inv: denominator epsilon; exp: inverse temperature
