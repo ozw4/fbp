@@ -85,9 +85,9 @@ class MaskedSegyGather(Dataset):
 			chno_values = f.attributes(self.chno_byte)[:]
 			chno_key_to_indices = self._build_index_map(chno_values)
 			chno_unique_keys = list(chno_key_to_indices.keys())
-                        dt_us = int(f.bin[segyio.BinField.Interval])
-                        dt = dt_us / 1e3
-                        dt_sec = dt_us * 1e-6
+			dt_us = int(f.bin[segyio.BinField.Interval])
+			dt = dt_us / 1e3
+			dt_sec = dt_us * 1e-6
 			try:
 				offsets = f.attributes(segyio.TraceField.offset)[:]
 				offsets = np.asarray(offsets, dtype=np.float32)
@@ -269,22 +269,22 @@ class MaskedSegyGather(Dataset):
 				target = _spatial_stretch_sameH(target, f_h)
 
 			target_t = torch.from_numpy(target)[None, ...]
-                x_t = torch.from_numpy(x)[None, ...]
-                xm = torch.from_numpy(x_masked)[None, ...]
-                fb_idx_t = torch.from_numpy(fb_idx_win)
-                off_t = torch.from_numpy(off_subset)
-                eff_dt_sec = info['dt_sec'] / max(factor, 1e-9)
-                sample = {
-                        'masked': xm,
-                        'original': x_t,
-                        'fb_idx': fb_idx_t,
-                        'offsets': off_t,
-                        'sample_dt_sec': torch.tensor(eff_dt_sec, dtype=torch.float32),
-                        'mask_indices': mask_idx,
-                        'key_name': key_name,
-                        'indices': selected_indices,
-                        'file_path': info['path'],
-                }
-		if self.target_mode == 'fb_seg':
-			sample['target'] = target_t
-		return sample
+			x_t = torch.from_numpy(x)[None, ...]
+			xm = torch.from_numpy(x_masked)[None, ...]
+			fb_idx_t = torch.from_numpy(fb_idx_win)
+			off_t = torch.from_numpy(off_subset)
+			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
+			sample = {
+			'masked': xm,
+			'original': x_t,
+			'fb_idx': fb_idx_t,
+			'offsets': off_t,
+			'dt_sec': torch.tensor(dt_eff_sec, dtype=torch.float32),
+			'mask_indices': mask_idx,
+			'key_name': key_name,
+			'indices': selected_indices,
+			'file_path': info['path'],
+			}
+			if self.target_mode == 'fb_seg':
+				sample['target'] = target_t
+			return sample

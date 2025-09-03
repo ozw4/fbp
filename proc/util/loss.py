@@ -232,11 +232,7 @@ def make_fb_seg_criterion(cfg_fb):
                                 pred, target, valid_mask=valid_mask, tau=tau, eps=eps
                         )
 
-                        if (
-                                (smooth_lambda <= 0 and smooth2_lambda <= 0)
-                                or offsets is None
-                                or dt_sec is None
-                        ):
+                        if (smooth_lambda <= 0 and smooth2_lambda <= 0) or offsets is None:
                                 return base, {
                                         'base': base.detach(),
                                         'smooth': base.new_tensor(0.0),
@@ -244,20 +240,24 @@ def make_fb_seg_criterion(cfg_fb):
                                 }
 
                         logit = pred.squeeze(1)
-                        prob = torch.softmax(logit / tau, dim=-1)
+                        prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
                         W = prob.size(-1)
                         t = torch.arange(W, device=prob.device, dtype=prob.dtype)
-                        pos = (prob * t).sum(dim=-1)
-                        dt_sec = dt_sec.to(pos.dtype).to(pos.device).clamp_min(1e-9)
-                        pos_t = pos * dt_sec[:, None]
+                        pos = (prob * t).sum(dim=-1)  # (B,H)
+                        if dt_sec is None:
+                                dt = pos.new_ones((pos.size(0), 1))
+                        else:
+                                dt = dt_sec.to(pos.device, pos.dtype)
+                                dt = dt.view(dt.size(0), 1)
+                        pos_sec = pos * dt  # (B,H)
 
                         dx = (
-                                (offsets[:, 1:] - offsets[:, :-1]).abs().to(pos.dtype).clamp_min(1e-6)
-                        )
+                                (offsets[:, 1:] - offsets[:, :-1]).abs().to(pos_sec.dtype).clamp_min(1e-6)
+                        )  # (B,H-1)
 
                         smooth = base.new_tensor(0.0)
                         if smooth_lambda > 0:
-                                dpos = pos_t[:, 1:] - pos_t[:, :-1]
+                                dpos = pos_sec[:, 1:] - pos_sec[:, :-1]
                                 scale = dx.median(dim=1, keepdim=True).values.clamp_min(1.0)
                                 if smooth_weight == "inv":
                                         w = 1.0 / (dx / scale + smooth_scale)
@@ -265,29 +265,26 @@ def make_fb_seg_criterion(cfg_fb):
                                         w = torch.exp(
                                                 -(dx / scale) / max(smooth_scale, 1e-6)
                                         )
-                                vpair = (valid_mask[:, 1:] * valid_mask[:, :-1]).to(dpos.dtype)
-                                num = (w * vpair * (dpos ** 2)).sum()
-                                den = (w * vpair).sum().clamp_min(1.0)
+                                v2 = (valid_mask[:, 1:] * valid_mask[:, :-1]).to(dpos.dtype)
+                                num = (w * v2 * (dpos ** 2)).sum()
+                                den = (w * v2).sum().clamp_min(1.0)
                                 smooth = num / den
 
                         loss_curv = base.new_tensor(0.0)
                         if smooth2_lambda > 0:
-                                dpos = pos_t[:, 1:] - pos_t[:, :-1]
+                                dpos = pos_sec[:, 1:] - pos_sec[:, :-1]
                                 s = dpos / dx
                                 dx_mid = 0.5 * (dx[:, 1:] + dx[:, :-1]).clamp_min(1e-6)
                                 curv = (s[:, 1:] - s[:, :-1]) / dx_mid
                                 v3 = (
                                         valid_mask[:, 2:] * valid_mask[:, 1:-1] * valid_mask[:, :-2]
                                 ).to(curv.dtype)
-                                doff_mid = dx_mid
-                                scale2 = (
-                                        doff_mid.median(dim=1, keepdim=True).values.clamp_min(1.0)
-                                )
+                                scale2 = dx_mid.median(dim=1, keepdim=True).values.clamp_min(1.0)
                                 if smooth_weight == "inv":
-                                        w2 = 1.0 / ((doff_mid / scale2) + smooth_scale)
+                                        w2 = 1.0 / ((dx_mid / scale2) + smooth_scale)
                                 else:
                                         w2 = torch.exp(
-                                                -(doff_mid / scale2) / max(smooth_scale, 1e-6)
+                                                -(dx_mid / scale2) / max(smooth_scale, 1e-6)
                                         )
                                 num2 = (w2 * v3 * (curv ** 2)).sum()
                                 den2 = (w2 * v3).sum().clamp_min(1.0)
