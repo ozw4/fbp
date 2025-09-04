@@ -177,21 +177,24 @@ def train_one_epoch(
 			if ema:
 				ema.update(model)
 			optimizer.zero_grad()
-			metric_logger.update(loss=accum_loss, lr=optimizer.param_groups[0]['lr'])
+			if lr_scheduler is not None:
+				lr_scheduler.step()
+			cur_lr = optimizer.param_groups[0]['lr']
+			metric_logger.update(loss=accum_loss, lr=cur_lr)
 			metric_logger.meters['samples/s'].update(
 				x_masked.shape[0] / (time.time() - start_time)
 			)
 			metric_logger.update(loss_base=accum_loss_base)
 			metric_logger.update(loss_smooth=accum_loss_smooth)
 			metric_logger.update(loss_curv=accum_loss_curv)
+
 			if writer:
 				writer.add_scalar('loss', accum_loss, step)
-				writer.add_scalar('lr', optimizer.param_groups[0]['lr'], step)
+				writer.add_scalar('lr', cur_lr, step)
 				writer.add_scalar('loss_base', accum_loss_base, step)
 				writer.add_scalar('loss_smooth', accum_loss_smooth, step)
 				writer.add_scalar('loss_curv', accum_loss_curv, step)
 			step += 1
-			lr_scheduler.step()
 			accum_loss = 0.0
 			accum_loss_base = 0.0
 			accum_loss_smooth = 0.0
