@@ -9,31 +9,28 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import utils
-from ema import ModelEMA
-from eval import val_one_epoch_fbseg
 from hydra import compose, initialize
-from loss import make_criterion, make_fb_seg_criterion
-from model import NetAE, adjust_first_conv_padding
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard.writer import SummaryWriter
-from util import (
-	MaskedSegyGather,
-	cover_all_traces_predict_chunked,
-	eval_synthe,
-	load_synth_pair,
-	segy_collate,
-	train_one_epoch,
-	val_one_epoch_snr,
-	worker_init_fn,
-)
-from utils import WarmupCosineScheduler, set_seed
-from vis import visualize_pair_quartet
 
+from proc.eval import val_one_epoch_fbseg
+from proc.util import utils
 from proc.util.audit import audit_offsets_and_mask_coverage
+from proc.util.collate import segy_collate
+from proc.util.data_io import load_synth_pair
+from proc.util.dataset import MaskedSegyGather
+from proc.util.ema import ModelEMA
+from proc.util.eval import eval_synthe, val_one_epoch_snr
+from proc.util.loss import make_criterion, make_fb_seg_criterion
+from proc.util.model import NetAE, adjust_first_conv_padding
+from proc.util.predict import cover_all_traces_predict_chunked
+from proc.util.rng_util import worker_init_fn
+from proc.util.train_loop import train_one_epoch
+from proc.util.utils import WarmupCosineScheduler, set_seed
+from proc.util.vis import visualize_pair_quartet
 
 
 def load_state_dict_excluding(

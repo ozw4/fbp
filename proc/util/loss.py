@@ -5,7 +5,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-from util.velocity_mask import make_velocity_feasible_mask
+from proc.util.velocity_mask import make_velocity_feasible_mask
 
 
 def shift_robust_l2_pertrace_vec(

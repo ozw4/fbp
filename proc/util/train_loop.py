@@ -1,10 +1,11 @@
 import time
 
 import torch
-import utils
 from torch.amp.autocast_mode import autocast
 
-from util.loss import shift_robust_l2_pertrace_vec
+from proc.util import utils
+
+from .loss import shift_robust_l2_pertrace_vec
 
 
 def _freeze_by_epoch(

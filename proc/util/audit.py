@@ -1,4 +1,6 @@
 # proc/util/audit.py
+"""Audit utilities for velocity mask and offset sanity checks."""
+
 import math
 from typing import Any
 
@@ -8,11 +10,11 @@ from proc.util.velocity_mask import make_velocity_feasible_mask
 
 
 @torch.no_grad()
-def assert_meta_shapes(meta: dict, B: int, H: int):
+def assert_meta_shapes(meta: dict, B: int, H: int) -> None:
     """Lightweight shape/finite checks for meta fields used by velocity mask."""
     offs = meta['offsets']
     dt = meta['dt_sec']
-    assert offs.ndim == 2 and offs.shape == (B, H), f"offsets shape {offs.shape}, expected {(B,H)}"
+    assert offs.ndim == 2 and offs.shape == (B, H), f"offsets shape {offs.shape}, expected {(B, H)}"
     assert torch.isfinite(offs).all(), "offsets has NaN/Inf"
     assert dt.ndim in (1, 2) and dt.shape[0] == B, f"dt_sec shape {dt.shape}, expected (B,) or (B,1)"
     assert torch.isfinite(dt).all(), "dt_sec has NaN/Inf"
