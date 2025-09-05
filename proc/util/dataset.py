@@ -1,4 +1,5 @@
 import random
+import warnings
 from fractions import Fraction
 from typing import Literal
 
@@ -84,7 +85,22 @@ class MaskedSegyGather(Dataset):
 			chno_values = f.attributes(self.chno_byte)[:]
 			chno_key_to_indices = self._build_index_map(chno_values)
 			chno_unique_keys = list(chno_key_to_indices.keys())
-			dt = int(f.bin[segyio.BinField.Interval]) / 1e3
+			dt_us = int(f.bin[segyio.BinField.Interval])
+			dt = dt_us / 1e3
+			dt_sec = dt_us * 1e-6
+			try:
+				offsets = f.attributes(segyio.TraceField.offset)[:]
+				offsets = np.asarray(offsets, dtype=np.float32)
+				if len(offsets) != f.tracecount:
+					warnings.warn(
+						f'offset length mismatch in {segy_path}',
+					)
+					offsets = np.zeros(f.tracecount, dtype=np.float32)
+			except Exception as e:
+				warnings.warn(
+					f'failed to read offsets from {segy_path}: {e}',
+				)
+				offsets = np.zeros(f.tracecount, dtype=np.float32)
 			fb = np.load(fb_path)
 			self.file_infos.append(
 				dict(
@@ -98,9 +114,11 @@ class MaskedSegyGather(Dataset):
 					chno_unique_keys=chno_unique_keys,
 					n_samples=f.samples.size,
 					n_traces=f.tracecount,
-					dt=dt,
+                                        dt=dt,
+                                        dt_sec=dt_sec,
 					segy_obj=f,
 					fb=fb,
+					offsets=offsets,
 				)
 			)
 
@@ -166,6 +184,12 @@ class MaskedSegyGather(Dataset):
 				fb_subset = np.concatenate(
 					[fb_subset, np.zeros(pad_len, dtype=fb_subset.dtype)]
 				)
+			offsets_full = info['offsets']
+			off_subset = offsets_full[selected_indices].astype(np.float32, copy=False)
+			if pad_len > 0:
+				off_subset = np.concatenate(
+					[off_subset, np.zeros(pad_len, dtype=np.float32)]
+				)
 			pick_ratio = np.count_nonzero(fb_subset > 0) / len(fb_subset)
 			if pick_ratio >= self.pick_ratio:
 				break
@@ -178,6 +202,7 @@ class MaskedSegyGather(Dataset):
 		if self.flip and random.random() < 0.5:
 			x = np.flip(x, axis=0).copy()
 			fb_subset = fb_subset[::-1].copy()
+			off_subset = off_subset[::-1].copy()
 		factor = 1.0
 		if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
 			factor = random.uniform(*self.augment_time_range)
@@ -194,6 +219,10 @@ class MaskedSegyGather(Dataset):
 		if self.augment_space_prob > 0 and random.random() < self.augment_space_prob:
 			f_h = random.uniform(*self.augment_space_range)
 			x = _spatial_stretch_sameH(x, f_h)  # 既存行
+			off_subset = _spatial_stretch_sameH(off_subset[:, None], f_h)[:, 0].astype(
+				np.float32,
+				copy=False,
+			)
 			did_space = True
 		if self.augment_freq_prob > 0 and random.random() < self.augment_freq_prob:
 			x = _apply_freq_augment(
@@ -207,24 +236,20 @@ class MaskedSegyGather(Dataset):
 		fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
 		invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
 		fb_idx_win[invalid] = -1
-		if self.target_mode == 'recon':
-			H = x.shape[0]
-			num_mask = int(self.mask_ratio * H)
-			mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
-			x_masked = x.copy()
-			if num_mask > 0:
-				noise = np.random.normal(
-					0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
-				)
-				if self.mask_mode == 'replace':
-					x_masked[mask_idx] = noise
-				elif self.mask_mode == 'add':
-					x_masked[mask_idx] += noise
-				else:
-					raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
-		else:
-			mask_idx = []
-			x_masked = x.copy()
+		H = x.shape[0]
+		num_mask = int(self.mask_ratio * H)
+		mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
+		x_masked = x.copy()
+		if num_mask > 0:
+			noise = np.random.normal(
+				0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
+			)
+			if self.mask_mode == 'replace':
+				x_masked[mask_idx] = noise
+			elif self.mask_mode == 'add':
+				x_masked[mask_idx] += noise
+			else:
+				raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
 		if self.target_mode == 'fb_seg':
 			sigma = max(float(self.label_sigma), 1e-6)
 			H_t, W_t = x.shape
@@ -244,19 +269,22 @@ class MaskedSegyGather(Dataset):
 				target = _spatial_stretch_sameH(target, f_h)
 
 			target_t = torch.from_numpy(target)[None, ...]
-		x_t = torch.from_numpy(x)[None, ...]
-		xm = torch.from_numpy(x_masked)[None, ...]
-		fb_idx_t = torch.from_numpy(fb_idx_win)
-		sample = {
+			x_t = torch.from_numpy(x)[None, ...]
+			xm = torch.from_numpy(x_masked)[None, ...]
+			fb_idx_t = torch.from_numpy(fb_idx_win)
+			off_t = torch.from_numpy(off_subset)
+			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
+			sample = {
 			'masked': xm,
 			'original': x_t,
 			'fb_idx': fb_idx_t,
+			'offsets': off_t,
+			'dt_sec': torch.tensor(dt_eff_sec, dtype=torch.float32),
+			'mask_indices': mask_idx,
 			'key_name': key_name,
 			'indices': selected_indices,
 			'file_path': info['path'],
-		}
-		if self.target_mode == 'recon':
-			sample['mask_indices'] = mask_idx
-		else:
-			sample['target'] = target_t
-		return sample
+			}
+			if self.target_mode == 'fb_seg':
+				sample['target'] = target_t
+			return sample

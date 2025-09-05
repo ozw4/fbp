@@ -151,114 +151,185 @@ def compute_loss(
 
 
 def make_criterion(cfg_loss):
-        """Return a criterion compatible with ``train_one_epoch``."""
+	"""Return a criterion compatible with ``train_one_epoch``."""
 
-        def _criterion(pred, target, *, mask=None, **kwargs):
-                return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
+	def _criterion(pred, target, *, mask=None, **kwargs):
+		return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
 
-        return _criterion
+	return _criterion
 
 
 def fb_seg_kl_loss(
-        logits: torch.Tensor,
-        target: torch.Tensor,
-        valid_mask: torch.Tensor | None = None,
-        tau: float = 1.0,
-        eps: float = 0.0,
+	logits: torch.Tensor,
+	target: torch.Tensor,
+	valid_mask: torch.Tensor | None = None,
+	tau: float = 1.0,
+	eps: float = 0.0,
 ):
-        """KL-divergence loss for first-break segmentation.
+	"""KL-divergence loss for first-break segmentation.
 
-        Parameters
-        ----------
-        logits : torch.Tensor
-                Raw model outputs of shape ``(B,1,H,W)``.
-        target : torch.Tensor
-                Target probabilities (Gaussian-like) of shape ``(B,1,H,W)``.
-        valid_mask : torch.Tensor | None
-                Optional mask indicating valid traces. Expected shape ``(B,H)``
-                or ``(B,1,H,1)``. Invalid traces are ignored in the loss.
-        tau : float
-                Softmax temperature.
-        eps : float
-                Label smoothing factor.
+	Parameters
+	----------
+	logits : torch.Tensor
+			Raw model outputs of shape ``(B,1,H,W)``.
+	target : torch.Tensor
+			Target probabilities (Gaussian-like) of shape ``(B,1,H,W)``.
+	valid_mask : torch.Tensor | None
+			Optional mask indicating valid traces. Expected shape ``(B,H)``
+			or ``(B,1,H,1)``. Invalid traces are ignored in the loss.
+	tau : float
+			Softmax temperature.
+	eps : float
+			Label smoothing factor.
 
-        """
-        log_p = F.log_softmax(logits.squeeze(1) / tau, dim=-1)  # (B,H,W)
-        q = target.squeeze(1)
-        q = q / (q.sum(dim=-1, keepdim=True) + 1e-12)
-        if eps > 0:
-                q = (1 - eps) * q + eps / q.size(-1)
-        kl_bh = -(q * log_p).sum(dim=-1)  # (B,H)
-        if valid_mask is not None:
-                if valid_mask.dim() == 4:
-                        valid = valid_mask.squeeze(1).squeeze(-1)
-                else:
-                        valid = valid_mask
-                valid = valid.to(kl_bh.dtype)
-                num = (kl_bh * valid).sum()
-                den = valid.sum().clamp_min(1)
-                return num / den
-        return kl_bh.mean()
+	"""
+	log_p = F.log_softmax(logits.squeeze(1) / tau, dim=-1)  # (B,H,W)
+	q = target.squeeze(1)
+	q = q / (q.sum(dim=-1, keepdim=True) + 1e-12)
+	if eps > 0:
+		q = (1 - eps) * q + eps / q.size(-1)
+	kl_bh = -(q * log_p).sum(dim=-1)  # (B,H)
+	if valid_mask is not None:
+		if valid_mask.dim() == 4:
+			valid = valid_mask.squeeze(1).squeeze(-1)
+		else:
+			valid = valid_mask
+		valid = valid.to(kl_bh.dtype)
+		num = (kl_bh * valid).sum()
+		den = valid.sum().clamp_min(1)
+		return num / den
+	return kl_bh.mean()
 
 
 def make_fb_seg_criterion(cfg_fb):
-        """Factory for fb segmentation loss.
+	"""Factory for fb segmentation loss.
 
-        ``cfg_fb.type`` selects between KL-divergence (``'kl'``) and MSE
-        (``'mse'``). Additional parameters ``tau`` and ``eps`` configure the
-        KL variant.
-        """
-        fb_type = str(getattr(cfg_fb, 'type', 'kl')).lower()
-        if fb_type == 'kl':
-                tau = float(getattr(cfg_fb, 'tau', 1.0))
-                eps = float(getattr(cfg_fb, 'eps', 0.0))
+	``cfg_fb.type`` selects between KL-divergence (``'kl'``) and MSE
+	(``'mse'``). Additional parameters ``tau`` and ``eps`` configure the
+	KL variant.
+	"""
+	fb_type = str(getattr(cfg_fb, 'type', 'kl')).lower()
+	if fb_type == 'kl':
+		tau = float(getattr(cfg_fb, 'tau', 1.0))
+		eps = float(getattr(cfg_fb, 'eps', 0.0))
+		smooth_lambda = float(getattr(cfg_fb, 'smooth_lambda', 0.0))
+		smooth_weight = str(getattr(cfg_fb, 'smooth_weight', 'inv'))
+		smooth_scale = float(getattr(cfg_fb, 'smooth_scale', 1.0))
+		smooth2_lambda = float(getattr(cfg_fb, 'smooth2_lambda', 0.0))
 
-                def _criterion(
-                        pred: torch.Tensor,
-                        target: torch.Tensor,
-                        *,
-                        fb_idx: torch.Tensor,
-                        mask=None,
-                        **kwargs,
-                ) -> torch.Tensor:
-                        valid_mask = (fb_idx >= 0).to(pred.dtype)
-                        return fb_seg_kl_loss(
-                                pred, target, valid_mask=valid_mask, tau=tau, eps=eps
-                        )
+		def _criterion(
+			pred: torch.Tensor,
+			target: torch.Tensor,
+			*,
+			fb_idx: torch.Tensor,
+			mask=None,
+			offsets=None,
+			dt_sec: torch.Tensor | None = None,
+			**kwargs,
+		) -> torch.Tensor | tuple[torch.Tensor, dict]:
+			valid_mask = (fb_idx >= 0).to(pred.dtype)
+			base = fb_seg_kl_loss(pred, target, valid_mask=valid_mask, tau=tau, eps=eps)
 
-                return _criterion
+			if (smooth_lambda <= 0 and smooth2_lambda <= 0) or offsets is None:
+				return base, {
+					'base': base.detach(),
+					'smooth': base.new_tensor(0.0),
+					'curv': base.new_tensor(0.0),
+				}
 
-        if fb_type == 'mse':
-                return make_fb_seg_mse_criterion()
+			logit = pred.squeeze(1)
+			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
+			W = prob.size(-1)
+			t = torch.arange(W, device=prob.device, dtype=prob.dtype)
+			pos = (prob * t).sum(dim=-1)  # (B,H)
+			if dt_sec is None:
+				dt = pos.new_ones((pos.size(0), 1))
+			else:
+				dt = dt_sec.to(pos.device, pos.dtype)
+				dt = dt.view(dt.size(0), 1)
+			pos_sec = pos * dt  # (B,H)
 
-        raise ValueError(f"Unknown fb_seg loss type: {fb_type}")
+			dx = (offsets[:, 1:] - offsets[:, :-1]).abs().to(pos_sec.dtype)
+			# データ適応の安全下限：メディアンの1e-4倍 or 1mm の大きい方
+			dx_med = dx.median()
+			dx_eps = torch.clamp(
+				dx_med * 1e-4, min=torch.tensor(1e-3, device=dx.device, dtype=dx.dtype)
+			)
+			dx_safe = dx.clamp_min(dx_eps)
+
+			smooth = base.new_tensor(0.0)
+			if smooth_lambda > 0:
+				dpos = pos_sec[:, 1:] - pos_sec[:, :-1]
+				scale = dx.median(dim=1, keepdim=True).values.clamp_min(1.0)
+				if smooth_weight == 'inv':
+					w = 1.0 / (dx / scale + smooth_scale)
+				else:
+					w = torch.exp(-(dx / scale) / max(smooth_scale, 1e-6))
+				v2 = (valid_mask[:, 1:] * valid_mask[:, :-1]).to(dpos.dtype)
+				num = (w * v2 * (dpos**2)).sum()
+				den = (w * v2).sum().clamp_min(1.0)
+				smooth = num / den
+
+			loss_curv = base.new_tensor(0.0)
+			if smooth2_lambda > 0:
+				dpos = pos_sec[:, 1:] - pos_sec[:, :-1]
+				s = dpos / dx_safe
+				dx_mid = 0.5 * (dx_safe[:, 1:] + dx_safe[:, :-1]).clamp_min(dx_eps)
+				curv = (s[:, 1:] - s[:, :-1]) / dx_mid
+				v3 = (valid_mask[:, 2:] * valid_mask[:, 1:-1] * valid_mask[:, :-2]).to(
+					curv.dtype
+				)
+				dx_ok = (dx > dx_eps).to(curv.dtype)
+				v3 = v3 * dx_ok[:, 1:] * dx_ok[:, :-1]
+				scale2 = dx_mid.median(dim=1, keepdim=True).values.clamp_min(1.0)
+				if smooth_weight == 'inv':
+					w2 = 1.0 / ((dx_mid / scale2) + smooth_scale)
+				else:
+					w2 = torch.exp(-(dx_mid / scale2) / max(smooth_scale, 1e-6))
+				num2 = (w2 * v3 * (curv**2)).sum()
+				den2 = (w2 * v3).sum().clamp_min(1.0)
+				loss_curv = num2 / den2
+
+			total = base + smooth_lambda * smooth + smooth2_lambda * loss_curv
+			return total, {
+				'base': base.detach(),
+				'smooth': (smooth_lambda * smooth).detach(),
+				'curv': (smooth2_lambda * loss_curv).detach(),
+			}
+
+		return _criterion
+
+	if fb_type == 'mse':
+		return make_fb_seg_mse_criterion()
+
+	raise ValueError(f'Unknown fb_seg loss type: {fb_type}')
 
 
 def make_fb_seg_mse_criterion():
-        """Return MSE criterion for fb segmentation.
+	"""Return MSE criterion for fb segmentation.
 
-        The loss averages the MSE over traces where ``fb_idx>=0``. If no valid
-        trace exists in the batch, the loss gracefully returns ``0`` without
-        raising errors or producing NaNs.
-        """
+	The loss averages the MSE over traces where ``fb_idx>=0``. If no valid
+	trace exists in the batch, the loss gracefully returns ``0`` without
+	raising errors or producing NaNs.
+	"""
 
-        def _criterion(
-                pred: torch.Tensor,
-                target: torch.Tensor,
-                *,
-                fb_idx: torch.Tensor,
-                mask=None,
-                **kwargs,
-        ) -> torch.Tensor:
-                # pred/target: (B,1,H,W), fb_idx: (B,H)
-                diff2 = (pred - target) ** 2  # (B,1,H,W)
-                loss_bh = diff2.mean(dim=(1, 3))  # (B,H)
-                valid = (fb_idx >= 0).to(loss_bh.dtype)
-                num = (loss_bh * valid).sum()
-                den = valid.sum().clamp_min(1)
-                return num / den
+	def _criterion(
+		pred: torch.Tensor,
+		target: torch.Tensor,
+		*,
+		fb_idx: torch.Tensor,
+		mask=None,
+		**kwargs,
+	) -> torch.Tensor:
+		# pred/target: (B,1,H,W), fb_idx: (B,H)
+		diff2 = (pred - target) ** 2  # (B,1,H,W)
+		loss_bh = diff2.mean(dim=(1, 3))  # (B,H)
+		valid = (fb_idx >= 0).to(loss_bh.dtype)
+		num = (loss_bh * valid).sum()
+		den = valid.sum().clamp_min(1)
+		return num / den
 
-        return _criterion
+	return _criterion
 
 
 def run_tests():
