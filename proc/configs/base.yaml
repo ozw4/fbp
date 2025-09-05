@@ -117,3 +117,7 @@ loss:
     t0_lo_ms: -20.0      # ms
     t0_hi_ms: 80.0       # ms
     taper_ms: 10.0       # ms
+
+debug:
+  audit_batches: 50          # 0 disables the audit
+  audit_cov_threshold: 0.5   # coverage threshold to flag low-coverage valid traces

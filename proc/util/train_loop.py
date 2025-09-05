@@ -124,6 +124,14 @@ def train_one_epoch(
 	accum_loss_curv = 0.0
 	for i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
 		x_masked, x_tgt, mask_or_none, meta = batch
+		if i == 0:
+			from proc.util.audit import assert_meta_shapes
+			B, H = x_masked.shape[0], x_masked.shape[2]
+			assert_meta_shapes(meta, B, H)
+			offs = meta['offsets']
+			diffs = (offs[:, 1:] - offs[:, :-1]).abs()
+			if (diffs.sum(dim=1) == 0).any():
+				raise RuntimeError("[FATAL] offsets are constant over H for at least one shot (likely unset)")
 		start_time = time.time()
 		x_masked = x_masked.to(device, non_blocking=True)
 		x_tgt = x_tgt.to(device, non_blocking=True)
