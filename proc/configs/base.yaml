@@ -111,3 +111,9 @@ loss:
     smooth_weight: inv      # inv | exp
     smooth_scale: 1.0       # inv: denominator epsilon; exp: inverse temperature
     smooth2_lambda: 0   # curvature penalty weight; 0.0 keeps current behavior
+    use_vel_mask: true
+    vmin_mask: 500.0     # m/s
+    vmax_mask: 6000.0    # m/s
+    t0_lo_ms: -20.0      # ms
+    t0_hi_ms: 80.0       # ms
+    taper_ms: 10.0       # ms

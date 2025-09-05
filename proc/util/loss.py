@@ -5,6 +5,8 @@ import time
 import torch
 import torch.nn.functional as F
 
+from proc.util.velocity_mask import make_velocity_feasible_mask
+
 
 def shift_robust_l2_pertrace_vec(
 	pred: torch.Tensor,  # (B, C, H, W)
@@ -228,17 +230,46 @@ def make_fb_seg_criterion(cfg_fb):
 			**kwargs,
 		) -> torch.Tensor | tuple[torch.Tensor, dict]:
 			valid_mask = (fb_idx >= 0).to(pred.dtype)
-			base = fb_seg_kl_loss(pred, target, valid_mask=valid_mask, tau=tau, eps=eps)
+
+			# --- build masked logits by applying a velocity cone prior ---
+			logit_raw = pred.squeeze(1)  # (B,H,W)
+			B, H, W = logit_raw.shape
+
+			use_vel_mask = bool(getattr(cfg_fb, 'use_vel_mask', False))
+			if use_vel_mask and (offsets is not None) and (dt_sec is not None):
+				velmask = make_velocity_feasible_mask(
+					offsets=offsets,
+					dt_sec=dt_sec,
+					W=W,
+					vmin=float(getattr(cfg_fb, 'vmin_mask', 500.0)),
+					vmax=float(getattr(cfg_fb, 'vmax_mask', 6000.0)),
+					t0_lo_ms=float(getattr(cfg_fb, 't0_lo_ms', -20.0)),
+					t0_hi_ms=float(getattr(cfg_fb, 't0_hi_ms', 80.0)),
+					taper_ms=float(getattr(cfg_fb, 'taper_ms', 10.0)),
+					device=pred.device,
+					dtype=pred.dtype,
+				)
+				# logits + log(mask)
+				logit = logit_raw + torch.log(velmask.clamp_min(1e-12))
+				vel_keep = (velmask > 0).float().mean()  # monitor how much survives
+			else:
+				logit = logit_raw
+				vel_keep = logit.new_tensor(1.0)
+
+			# --- base KL (use masked logits) ---
+			base = fb_seg_kl_loss(logit.unsqueeze(1), target, valid_mask=valid_mask, tau=tau, eps=eps)
+
+			# downstream uses the masked probabilities
+			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 
 			if (smooth_lambda <= 0 and smooth2_lambda <= 0) or offsets is None:
 				return base, {
 					'base': base.detach(),
 					'smooth': base.new_tensor(0.0),
 					'curv': base.new_tensor(0.0),
+					'vel_keep': vel_keep.detach(),
 				}
 
-			logit = pred.squeeze(1)
-			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 			W = prob.size(-1)
 			t = torch.arange(W, device=prob.device, dtype=prob.dtype)
 			pos = (prob * t).sum(dim=-1)  # (B,H)
@@ -295,6 +326,7 @@ def make_fb_seg_criterion(cfg_fb):
 				'base': base.detach(),
 				'smooth': (smooth_lambda * smooth).detach(),
 				'curv': (smooth2_lambda * loss_curv).detach(),
+				'vel_keep': vel_keep.detach(),
 			}
 
 		return _criterion
