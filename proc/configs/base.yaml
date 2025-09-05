@@ -9,7 +9,7 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'caformer_b36.sail_in22k_ft_in1k_finetune_augspace01'
+suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_velmask'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384

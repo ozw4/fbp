@@ -5,7 +5,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-from proc.util.velocity_mask import make_velocity_feasible_mask
+from util.velocity_mask import make_velocity_feasible_mask
 
 
 def shift_robust_l2_pertrace_vec(
@@ -249,15 +249,34 @@ def make_fb_seg_criterion(cfg_fb):
 					device=pred.device,
 					dtype=pred.dtype,
 				)
-				# logits + log(mask)
-				logit = logit_raw + torch.log(velmask.clamp_min(1e-12))
-				vel_keep = (velmask > 0).float().mean()  # monitor how much survives
+
+				# ---- SAFE log(mask): fp32で計算 + fp16安全なepsilon + 全ゼロ対策 ----
+				with torch.no_grad():
+					vm32 = velmask.detach().to(torch.float32)  # (B,H,W)
+					# 全ゼロ・トレースを検出
+					has_any = vm32.sum(dim=-1, keepdim=True) > 0  # (B,H,1) bool
+					# 全ゼロのトレースは「マスク無効（=全1）」に差し替え
+					vm32 = torch.where(has_any, vm32, torch.ones_like(vm32))
+
+					eps = float(getattr(cfg_fb, 'vel_log_eps', 1e-4))  # ★ fp16安全
+					neg_large = float(
+						getattr(cfg_fb, 'vel_log_neg', -80.0)
+					)  # ★ ゼロには一定の大負値
+					logmask32 = torch.where(
+						vm32 > 0.0,
+						torch.log(vm32.clamp_min(eps)),
+						torch.full_like(vm32, neg_large),
+					)
+
+				# logits + log(mask)（元dtypeへ）
+				logit = logit_raw + logmask32.to(logit_raw.dtype)
 			else:
 				logit = logit_raw
-				vel_keep = logit.new_tensor(1.0)
 
 			# --- base KL (use masked logits) ---
-			base = fb_seg_kl_loss(logit.unsqueeze(1), target, valid_mask=valid_mask, tau=tau, eps=eps)
+			base = fb_seg_kl_loss(
+				logit.unsqueeze(1), target, valid_mask=valid_mask, tau=tau, eps=eps
+			)
 
 			# downstream uses the masked probabilities
 			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
@@ -267,7 +286,6 @@ def make_fb_seg_criterion(cfg_fb):
 					'base': base.detach(),
 					'smooth': base.new_tensor(0.0),
 					'curv': base.new_tensor(0.0),
-					'vel_keep': vel_keep.detach(),
 				}
 
 			W = prob.size(-1)
@@ -326,7 +344,6 @@ def make_fb_seg_criterion(cfg_fb):
 				'base': base.detach(),
 				'smooth': (smooth_lambda * smooth).detach(),
 				'curv': (smooth2_lambda * loss_curv).detach(),
-				'vel_keep': vel_keep.detach(),
 			}
 
 		return _criterion
