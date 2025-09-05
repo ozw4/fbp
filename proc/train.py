@@ -33,6 +33,8 @@ from util import (
 from utils import WarmupCosineScheduler, set_seed
 from vis import visualize_pair_quartet
 
+from proc.util.audit import audit_offsets_and_mask_coverage
+
 
 def load_state_dict_excluding(
 	model: torch.nn.Module,
@@ -227,16 +229,30 @@ else:
 
 
 val_loader = DataLoader(
-	valid_dataset,
-	batch_size=cfg.batch_size,
-	sampler=SequentialSampler(valid_dataset),  # または shuffle=False
-	shuffle=False,
-	num_workers=0,  # 読むだけなので 0 で十分（>0でもOK）
-	pin_memory=True,
-	collate_fn=segy_collate,
-	drop_last=False,
-	worker_init_fn=worker_init_fn,
+        valid_dataset,
+        batch_size=cfg.batch_size,
+        sampler=SequentialSampler(valid_dataset),  # または shuffle=False
+        shuffle=False,
+        num_workers=0,  # 読むだけなので 0 で十分（>0でもOK）
+        pin_memory=True,
+        collate_fn=segy_collate,
+        drop_last=False,
+        worker_init_fn=worker_init_fn,
 )
+
+# -------- DEBUG AUDIT (run once before training) --------
+try:
+        audit_batches = int(getattr(getattr(cfg, 'debug', object()), 'audit_batches', 50))
+        cov_th = float(getattr(getattr(cfg, 'debug', object()), 'audit_cov_threshold', 0.5))
+except Exception:
+        audit_batches, cov_th = 50, 0.5
+
+if audit_batches > 0:
+        print(f"[AUDIT] running audit on {audit_batches} batches (coverage threshold={cov_th})")
+        audit_offsets_and_mask_coverage(train_loader, cfg.loss.fb_seg, max_batches=audit_batches, cov_threshold=cov_th)
+        # Optionally also audit the validation loader:
+        # audit_offsets_and_mask_coverage(val_loader, cfg.loss.fb_seg, max_batches=min(20, audit_batches), cov_threshold=cov_th)
+print("[AUDIT] done.")
 
 synthe_noise_segy = (
 	'/home/dcuser/data/Synthetic/marmousi/shot801_decimate_fieldnoise008.sgy'
