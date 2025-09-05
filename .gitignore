@@ -25,10 +25,10 @@ Thumbs.db
 *.tdms
 *.sgy
 *.segy
-
+*.png
 data/
 result/
-
+debug_*/
 # compiled コード
 *.so
 *.o
