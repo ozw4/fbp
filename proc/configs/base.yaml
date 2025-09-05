@@ -4,12 +4,12 @@ defaults:
 
 # データセット
 data_root : '/home/dcuser/data/ActiveSeisField/'
-train_field_list: train_field_list_tstkres.txt
+train_field_list: train_field_list_wotstkres.txt
 valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'edgenext_small.usi_in1k_finetune_augspace01_offs2-inv-l0001-s1'
+suffix: 'caformer_b36.sail_in22k_ft_in1k_finetune_augspace01_off2-inv-l0001-s1'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -76,7 +76,7 @@ snr:
   noise_std: ${dataset.mask_noise_std}
 
 dataset:
-  mask_ratio: 0.5
+  mask_ratio: 0
   mask_mode: replace         # replace | add
   mask_noise_std: 1
   target_mode: ${task}

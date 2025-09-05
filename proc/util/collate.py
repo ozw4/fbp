@@ -25,7 +25,7 @@ def segy_collate(batch):
                 mask = make_mask_2d(mask_indices_list, H, W, device=x_masked.device)
         fb_idx = torch.stack([b['fb_idx'] for b in batch], dim=0)
         offsets = torch.stack([b['offsets'] for b in batch], dim=0)
-        dt_sec = torch.stack([b['sample_dt_sec'] for b in batch], dim=0)
+        dt_sec = torch.stack([b['dt_sec'] for b in batch], dim=0)
         meta = {
                 'file_path': [b['file_path'] for b in batch],
                 'key_name': [b['key_name'] for b in batch],
