@@ -9,7 +9,7 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'caformer_b36.sail_in22k_ft_in1k_finetune_augspace01_off2-inv-l0001-s1'
+suffix: 'caformer_b36.sail_in22k_ft_in1k_finetune_augspace01'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -31,12 +31,12 @@ task: fb_seg  # recon | fb_seg
 # 学習設定
 batch_size: 16
 steps_per_epoch: 2000
-lr: 1e-5
+lr: 1e-4
 lr_milestones: []
 momentum: 0.9
 weight_decay: 0.0001
 lr_gamma: 0.2
-lr_warmup_epochs: 10
+lr_warmup_epochs: 5
 val_steps: 50
 epoch_block: 20
 num_block: 10
@@ -110,4 +110,4 @@ loss:
     smooth_lambda: 0      # 0 => disabled (backward compatible)
     smooth_weight: inv      # inv | exp
     smooth_scale: 1.0       # inv: denominator epsilon; exp: inverse temperature
-    smooth2_lambda: 0.001   # curvature penalty weight; 0.0 keeps current behavior
+    smooth2_lambda: 0   # curvature penalty weight; 0.0 keeps current behavior
