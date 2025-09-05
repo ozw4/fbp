@@ -25,9 +25,11 @@ Thumbs.db
 *.tdms
 *.sgy
 *.segy
+*.png
 
 data/
 result/
+debug_prior/
 
 # compiled コード
 *.so

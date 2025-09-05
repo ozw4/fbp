@@ -1,119 +1,214 @@
 # %%
 # Fix: expand the leading K dimension before gather
-import time
 import math
+import time
 
 import torch
 import torch.nn.functional as F
 
 
 @torch.no_grad()
+def trace_confidence_from_prob(
+	prob: torch.Tensor,  # (B,H,W) softmax 後
+	dt_sec: torch.Tensor,  # (B,1) or (B,)
+	method: str = 'var',  # "var" | "entropy" | "var+ent"
+	sigma_ms_ref: float = 20.0,  # 分散基準（ms）
+	floor: float = 0.2,  # 最小重み（自己強化抑制）
+	power: float = 0.5,  # 0.5=√で弱める
+	eps: float = 1e-9,
+) -> torch.Tensor:
+	"""確率分布 p(t) から (B,H) の確信度重みを作る（停止勾配）。"""
+	B, H, W = prob.shape
+	t_idx = torch.arange(W, device=prob.device, dtype=prob.dtype).view(1, 1, W)
+	dt = dt_sec.to(prob).view(B, 1, 1)
+	t = t_idx * dt  # (B,1,W) [s]
+
+	# 時間平均・分散
+	mu = (prob * t).sum(dim=-1)  # (B,H)
+	var = (prob * (t - mu.unsqueeze(-1)) ** 2).sum(dim=-1)  # (B,H)
+	var = var.clamp_min(eps)
+
+	w_var = None
+	if method in ('var', 'var+ent'):
+		sigma_ref = max(sigma_ms_ref * 1e-3, 1e-6)
+		w_var = torch.exp(-var / (2 * sigma_ref**2))  # 小さい分散ほど重く
+
+	if method == 'var':
+		w = w_var
+	elif method == 'entropy':
+		Hlog = -(prob.clamp_min(eps) * prob.clamp_min(eps).log()).sum(dim=-1)  # (B,H)
+		Hnorm = Hlog / math.log(W)
+		w = (1.0 - Hnorm).clamp(0.0, 1.0)
+	else:  # "var+ent" 幾何平均を弱めに
+		Hlog = -(prob.clamp_min(eps) * prob.clamp_min(eps).log()).sum(dim=-1)
+		Hnorm = Hlog / math.log(W)
+		w_ent = (1.0 - Hnorm).clamp(0.0, 1.0)
+		w = (w_var * w_ent).sqrt()
+
+	# 床＋弱め
+	return w.clamp_min(floor) ** power
+
+
+@torch.no_grad()
 def robust_linear_trend_sections(
-    offsets: torch.Tensor,   # (B,H) in meters
-    t_sec: torch.Tensor,     # (B,H) predicted time in seconds
-    valid: torch.Tensor,     # (B,H) boolean or 0/1; fb_idx>=0
-    section_len: int = 128,
-    stride: int = 64,
-    huber_c: float = 1.345,
-    iters: int = 3,
-    vmin: float = 300.0,
-    vmax: float = 6000.0,
+	offsets: torch.Tensor,  # (B,H) [m]
+	t_sec: torch.Tensor,  # (B,H) 予測 pos_sec [s]
+	valid: torch.Tensor,  # (B,H) fb_idx>=0
+	*,
+	prob: torch.Tensor,  # (B,H,W) softmax 後
+	dt_sec: torch.Tensor,  # (B,1) or (B,)
+	section_len: int = 128,
+	stride: int = 64,
+	huber_c: float = 1.345,
+	iters: int = 3,
+	vmin: float = 300.0,
+	vmax: float = 6000.0,
+	# 確信度の作り方
+	conf_method: str = 'var',  # "var" | "entropy" | "var+ent"
+	conf_sigma_ms: float = 20.0,
+	conf_floor: float = 0.2,
+	conf_power: float = 0.5,
+	# 並べ替えとブレンド
+	sort_offsets: bool = True,  # 回帰/差分計算は昇順で
+	use_taper: bool = True,  # 窓合成時に Hann テーパー
 ):
-    """Huber-IRLS linear fit per section: t(x) ≈ a + s*x.
+	"""確信度で前重みを掛けたセクション回帰。t(x) ≈ a + s x を IRLS で推定。
+	返り値: (trend_t, trend_s, v_trend, w_conf) いずれも (B,H)
+	"""
+	B, H = offsets.shape
+	x0 = offsets
+	y0 = t_sec
+	v0 = (valid > 0).to(t_sec)
 
-    Returns:
-      trend_t : (B,H) section-wise fitted times [s]
-      trend_s : (B,H) section-wise slowness [s/m]
-      v_trend : (B,H) section-wise velocity [m/s]
+	# 1) 確信度 (B,H)
+	w_conf = (
+		trace_confidence_from_prob(
+			prob=prob,
+			dt_sec=dt_sec,
+			method=conf_method,
+			sigma_ms_ref=conf_sigma_ms,
+			floor=conf_floor,
+			power=conf_power,
+		)
+		.detach()
+		.to(t_sec)
+	)
 
-    """
-    B, H = offsets.shape
-    x = offsets.to(t_sec)
-    y = t_sec
-    v = (valid > 0).to(t_sec)
+	# 2) 必要ならオフセット昇順に並べ替え（内部計算だけ）
+	if sort_offsets:
+		idx = torch.argsort(x0, dim=1)
+		arangeH = torch.arange(H, device=idx.device).unsqueeze(0).expand_as(idx)
+		inv = torch.empty_like(idx)
+		inv.scatter_(1, idx, arangeH)
 
-    trend_t = torch.zeros_like(y)
-    trend_s = torch.zeros_like(y)
-    counts  = torch.zeros_like(y)
+		x = torch.gather(x0, 1, idx)
+		y = torch.gather(y0, 1, idx)
+		v = torch.gather(v0, 1, idx)
+		pw = torch.gather(w_conf, 1, idx)
+	else:
+		x, y, v, pw = x0, y0, v0, w_conf
 
-    eps = 1e-12
-    for start in range(0, H, stride):
-        end = min(H, start + section_len)
-        L = end - start
-        if L < 4:
-            continue
+	trend_t = torch.zeros_like(y)
+	trend_s = torch.zeros_like(y)
+	counts = torch.zeros_like(y)
 
-        xs = x[:, start:end]   # (B,L)
-        ys = y[:, start:end]
-        vs = v[:, start:end]
+	eps = 1e-12
+	for start in range(0, H, stride):
+		end = min(H, start + section_len)
+		L = end - start
+		if L < 4:
+			continue
 
-        # initialize with valid mask
-        w = vs.clone()
+		xs = x[:, start:end]  # (B,L)
+		ys = y[:, start:end]
+		vs = v[:, start:end]
+		pws = pw[:, start:end]  # (B,L) 確信度
 
-        a = torch.zeros(B, 1, dtype=y.dtype, device=y.device)
-        b = torch.zeros(B, 1, dtype=y.dtype, device=y.device)  # slope (slowness)
+		# 初期重み：有効 × 確信度
+		w = (vs * pws).clone()
 
-        for _ in range(iters):
-            Sw  = (w).sum(dim=1, keepdim=True).clamp_min(eps)
-            Sx  = (w * xs).sum(dim=1, keepdim=True)
-            Sy  = (w * ys).sum(dim=1, keepdim=True)
-            Sxx = (w * xs * xs).sum(dim=1, keepdim=True)
-            Sxy = (w * xs * ys).sum(dim=1, keepdim=True)
+		a = torch.zeros(B, 1, dtype=y.dtype, device=y.device)
+		b = torch.zeros(B, 1, dtype=y.dtype, device=y.device)  # slope=slowness
 
-            D   = (Sw * Sxx - Sx * Sx).clamp_min(eps)
-            b = (Sw * Sxy - Sx * Sy) / D
-            a = (Sy - b * Sx) / Sw
+		for _ in range(iters):
+			Sw = (w).sum(dim=1, keepdim=True).clamp_min(eps)
+			Sx = (w * xs).sum(dim=1, keepdim=True)
+			Sy = (w * ys).sum(dim=1, keepdim=True)
+			Sxx = (w * xs * xs).sum(dim=1, keepdim=True)
+			Sxy = (w * xs * ys).sum(dim=1, keepdim=True)
 
-            yhat = a + b * xs
-            res  = (ys - yhat) * vs  # invalid -> 0 residual
+			D = (Sw * Sxx - Sx * Sx).clamp_min(eps)
+			b = (Sw * Sxy - Sx * Sy) / D
+			a = (Sy - b * Sx) / Sw
 
-            # robust scale (MAD)
-            # if all invalid, use tiny scale to keep weights ~0
-            abs_res = res.abs()
-            med = abs_res.median(dim=1, keepdim=True).values
-            scale = (1.4826 * med).clamp_min(1e-6)
+			yhat = a + b * xs
+			res = (ys - yhat) * vs
+			# robust scale (MAD)
+			scale = (1.4826 * res.abs().median(dim=1, keepdim=True).values).clamp_min(
+				1e-6
+			)
+			r = res / (huber_c * scale)
 
-            r = res / (huber_c * scale)
-            # Huber IRLS weights
-            w = torch.where(r.abs() <= 1.0, vs, vs * (1.0 / r.abs()).clamp_max(10.0))
+			w_huber = torch.where(
+				r.abs() <= 1.0, vs, vs * (1.0 / r.abs()).clamp_max(10.0)
+			)
+			# 確信度は常に前掛け（停止勾配）
+			w = w_huber * pws
 
-        # clamp slowness by velocity bounds
-        s_sec = b.squeeze(1).clamp(min=1.0 / vmax, max=1.0 / vmin)  # (B,)
-        yhat  = (a + b * xs)
+		# 物理レンジでクランプ
+		s_sec = b.squeeze(1).clamp(min=1.0 / vmax, max=1.0 / vmin)  # (B,)
 
-        trend_t[:, start:end] += yhat
-        trend_s[:, start:end] += s_sec[:, None].expand(-1, L)
-        counts[:,  start:end] += vs.new_ones(B, L)
+		# ブレンド重み：Hann×有効×確信度（境界を滑らかに）
+		if use_taper:
+			wwin = torch.hann_window(
+				L, periodic=False, device=y.device, dtype=y.dtype
+			).view(1, L)
+		else:
+			wwin = torch.ones(1, L, device=y.device, dtype=y.dtype)
+		wtap = wwin * vs * pws
 
-    trend_t = trend_t / counts.clamp_min(1.0)
-    trend_s = trend_s / counts.clamp_min(1.0)
-    v_trend = (1.0 / trend_s.clamp_min(1e-6))
-    return trend_t, trend_s, v_trend
+		yhat = a + b * xs  # (B,L)
+		trend_t[:, start:end] += yhat * wtap
+		trend_s[:, start:end] += s_sec[:, None] * wtap
+		counts[:, start:end] += wtap
+
+	trend_t = trend_t / counts.clamp_min(1e-6)
+	trend_s = trend_s / counts.clamp_min(1e-6)
+	v_trend = 1.0 / trend_s.clamp_min(1e-6)
+
+	# 元順に戻す
+	if sort_offsets:
+		trend_t = torch.gather(trend_t, 1, inv)
+		trend_s = torch.gather(trend_s, 1, inv)
+		v_trend = torch.gather(v_trend, 1, inv)
+		w_conf = torch.gather(w_conf, 1, inv)
+
+	return trend_t, trend_s, v_trend, w_conf
 
 
 def gaussian_prior_from_trend(
-    t_trend_sec: torch.Tensor,   # (B,H)
-    dt_sec: torch.Tensor,        # (B,1) or (B,)
-    W: int,
-    sigma_ms: float,
-    ref_tensor: torch.Tensor,
+	t_trend_sec: torch.Tensor,  # (B,H)
+	dt_sec: torch.Tensor,  # (B,1) or (B,)
+	W: int,
+	sigma_ms: float,
+	ref_tensor: torch.Tensor,
 ):
-    """Make a per-trace Gaussian prior in time around t_trend.
+	"""Make a per-trace Gaussian prior in time around t_trend.
 
-    Returns: prior probabilities of shape (B,H,W), each trace sums to 1.
-    """
-    B, H = t_trend_sec.shape
-    t = torch.arange(W, device=ref_tensor.device, dtype=ref_tensor.dtype).view(1,1,W)
-    if dt_sec.dim() == 1:
-        dt = dt_sec.view(B, 1, 1).to(ref_tensor)
-    else:
-        dt = dt_sec.to(ref_tensor).view(B, 1, 1)
+	Returns: prior probabilities of shape (B,H,W), each trace sums to 1.
+	"""
+	B, H = t_trend_sec.shape
+	t = torch.arange(W, device=ref_tensor.device, dtype=ref_tensor.dtype).view(1, 1, W)
+	if dt_sec.dim() == 1:
+		dt = dt_sec.view(B, 1, 1).to(ref_tensor)
+	else:
+		dt = dt_sec.to(ref_tensor).view(B, 1, 1)
 
-    mu = t_trend_sec.to(ref_tensor).unsqueeze(-1)  # (B,H,1)
-    sigma = max(sigma_ms * 1e-3, 1e-6)
-    logp = -0.5 * ((t*dt - mu) / sigma) ** 2       # (B,H,W)
-    prior = torch.softmax(logp, dim=-1)
-    return prior
+	mu = t_trend_sec.to(ref_tensor).unsqueeze(-1)  # (B,H,1)
+	sigma = max(sigma_ms * 1e-3, 1e-6)
+	logp = -0.5 * ((t * dt - mu) / sigma) ** 2  # (B,H,W)
+	prior = torch.softmax(logp, dim=-1)
+	return prior
 
 
 def shift_robust_l2_pertrace_vec(
