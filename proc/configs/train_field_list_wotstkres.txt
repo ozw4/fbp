@@ -39,7 +39,6 @@ mooka2016
 noto21-2a
 noto21-2b
 noto21-3
-noto21-3a
 noto21-4
 noto21-5
 noto21-6
