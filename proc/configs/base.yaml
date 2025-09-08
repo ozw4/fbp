@@ -122,14 +122,15 @@ loss:
     # --- trend-based prior ---
     use_trend_prior: true      # まず有効化して挙動確認
     prior_mode: logit          # 'logit' | 'kl'
-    prior_alpha: 0.05          # priorの強さ
-    prior_sigma_ms: 20.0       # ガウスpriorの標準偏差 [ms]
+    prior_alpha: 0.1         # priorの強さ
+    prior_sigma_ms: 50.0       # ガウスpriorの標準偏差 [ms]
     trend_section: 128         # セクション長
     trend_stride: 64           # セクション間ストライド
     trend_huber_c: 1.345       # Huber閾値
     trend_vmin: 500.0          # トレンド推定での下限速度 [m/s]
     trend_vmax: 6000.0         # トレンド推定での上限速度 [m/s]
     prior_log_eps: 1.0e-4      # priorのlog安定化用 ε
+    prior_conf_gate: 0.5
 debug:
   audit_batches: 50          # 0 disables the audit
   audit_cov_threshold: 0.5   # coverage threshold to flag low-coverage valid traces
