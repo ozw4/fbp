@@ -26,12 +26,12 @@ def cover_all_traces_predict(
 		mask_noise_mode: replace to overwrite, add to perturb traces.
 
 	"""
-	assert x.dim() == 4 and x.size(1) == 1, 'x must be (B,1,H,W)'
+	assert x.dim() == 4 and x.size(1) in (1, 2), 'x must be (B,C,H,W) with C=1 or 2'
 	device = device or x.device
-	B, _, H, W = x.shape
+	B, C, H, W = x.shape
 	m = max(1, min(int(round(mask_ratio * H)), H - 1))
 	K = math.ceil(H / m)
-	y_full = torch.empty_like(x)
+	y_full = torch.empty((B, 1, H, W), dtype=x.dtype, device=device)
 	for b in range(B):
 		if seed is not None:
 			g = torch.Generator(device='cpu').manual_seed(seed + b)
@@ -40,6 +40,7 @@ def cover_all_traces_predict(
 			perm = torch.randperm(H)
 		chunks = [perm[i : i + m] for i in range(0, H, m)]
 		for s in range(0, K, passes_batch):
+			batch_chunks = chunks[s : s + passes_batch]
 			batch_chunks = chunks[s : s + passes_batch]
 			xmb = []
 			for idxs in batch_chunks:
@@ -57,13 +58,12 @@ def cover_all_traces_predict(
 				n = n.to(device=device, non_blocking=True)
 				idxs_dev = idxs.to(device)
 				if mask_noise_mode == 'replace':
-					xm[:, :, idxs_dev, :] = n
+					xm[:, :1, idxs_dev, :] = n
 				elif mask_noise_mode == 'add':
-					xm[:, :, idxs_dev, :] += n
+					xm[:, :1, idxs_dev, :] += n
 				else:
 					raise ValueError(f'Invalid mask_noise_mode: {mask_noise_mode}')
 				xmb.append(xm)
-			xmb = torch.cat(xmb, dim=0)
 			dev_type = 'cuda' if xmb.is_cuda else 'cpu'
 			with autocast(device_type=dev_type, enabled=use_amp):
 				yb = model(xmb)
@@ -94,9 +94,10 @@ def cover_all_traces_predict_chunked(
 
 	"""
 	assert overlap < chunk_h, 'overlap は chunk_h より小さくしてください'
+	assert x.dim() == 4 and x.size(1) in (1, 2), 'x must be (B,C,H,W)'
 	device = device or x.device
 	B, _, H, W = x.shape
-	y_acc = torch.zeros_like(x)
+	y_acc = torch.zeros((B, 1, H, W), dtype=x.dtype, device=device)
 	w_acc = torch.zeros((B, 1, H, 1), dtype=x.dtype, device=device)
 	step = chunk_h - overlap
 	s = 0

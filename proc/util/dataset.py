@@ -202,7 +202,7 @@ class MaskedSegyGather(Dataset):
 		if self.flip and random.random() < 0.5:
 			x = np.flip(x, axis=0).copy()
 			fb_subset = fb_subset[::-1].copy()
-			off_subset = off_subset[::-1].copy()
+			off_subset = off_subset[::-1].copy()  # keep offsets aligned when flipping
 		factor = 1.0
 		if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
 			factor = random.uniform(*self.augment_time_range)

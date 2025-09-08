@@ -6,6 +6,7 @@ from torch.nn.utils import clip_grad_norm_
 
 from proc.util import utils
 
+from .features import make_offset_channel
 from .loss import shift_robust_l2_pertrace_vec
 
 
@@ -104,11 +105,12 @@ def train_one_epoch(
 	use_amp=True,
 	scaler=None,
 	ema=None,
-	gradient_accumulation_steps=1,
-	max_shift=5,
-	step: int = 0,
-	freeze_epochs: int = 0,
-	unfreeze_steps: int = 1,
+        gradient_accumulation_steps=1,
+        max_shift=5,
+        step: int = 0,
+        freeze_epochs: int = 0,
+        unfreeze_steps: int = 1,
+        use_offset_input: bool = False,
 ):
 	"""Run one training epoch."""
 	if getattr(model, '_transfer_loaded', False) and freeze_epochs > 0:
@@ -188,8 +190,12 @@ def train_one_epoch(
 				for k in ('fb_idx', 'offsets', 'dt_sec'):
 					if k in meta and isinstance(meta[k], torch.Tensor):
 						meta[k] = meta[k][keep]
+		x_in = x_masked
+		if use_offset_input and ('offsets' in meta):
+			offs_ch = make_offset_channel(x_masked, meta['offsets'])
+			x_in = torch.cat([x_masked, offs_ch], dim=1)
 		with autocast(device_type=device_type, enabled=use_amp):
-			pred = model(x_masked)
+			pred = model(x_in)
 			if not _finite_or_report("logits", pred, meta):
 				print("[SKIP] non-finite logits; skipping batch")
 				optimizer.zero_grad(set_to_none=True)

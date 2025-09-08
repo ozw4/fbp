@@ -17,7 +17,8 @@ from proc.util import MaskedSegyGather, segy_collate, worker_init_fn
 
 # loss.py からロバスト回帰だけ借ります
 from proc.util.loss import gaussian_prior_from_trend, robust_linear_trend_sections
-from proc.util.model import NetAE, adjust_first_conv_padding
+from proc.util.model import NetAE, adjust_first_conv_padding, inflate_first_conv_in
+from proc.util.features import make_offset_channel
 
 
 @torch.no_grad()
@@ -81,7 +82,12 @@ def debug_prior_visual(
 
 			x_masked, x_tgt, mask_or_none, meta = batch
 			x_masked = x_masked.to(device, non_blocking=True)
-			logits = model(x_masked)  # (B,1,H,W)
+			x_in = x_masked
+			if getattr(cfg, 'model', None) and getattr(cfg.model, 'use_offset_input', False):
+				if 'offsets' in meta:
+					offs_ch = make_offset_channel(x_masked, meta['offsets'])
+					x_in = torch.cat([x_masked, offs_ch], dim=1)
+			logits = model(x_in)  # (B,1,H,W)
 			logit = logits.squeeze(1)  # (B,H,W)
 			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 			B, H, W = prob.shape
@@ -349,6 +355,12 @@ model = NetAE(
 	pre_stage_strides=((1, 1), (1, 2)),
 ).to(device)
 
+if getattr(cfg.model, 'use_offset_input', False):
+	inflate_first_conv_in(model, in_ch=2)
+
+if getattr(cfg.model, 'use_offset_input', False):
+	inflate_first_conv_in(model, in_ch=2)
+
 if 'caformer' in cfg.backbone:
 	adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
@@ -369,8 +381,13 @@ model.eval()
 if len(valid_dataset) > 0:
 	x_masked, x_tgt, mask_or_none, meta = next(iter(val_loader))
 	x_masked = x_masked.to(device, non_blocking=True)
+	x_in = x_masked
+	if getattr(cfg, 'model', None) and getattr(cfg.model, 'use_offset_input', False):
+		if 'offsets' in meta:
+			offs_ch = make_offset_channel(x_masked, meta['offsets'])
+			x_in = torch.cat([x_masked, offs_ch], dim=1)
 	with torch.no_grad():
-		_ = model(x_masked)
+		_ = model(x_in)
 	print('[check] val_loader 取り回し & モデル推論 OK')
 else:
 	print('[check] valid_dataset が空です')
