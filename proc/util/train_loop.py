@@ -2,10 +2,27 @@ import time
 
 import torch
 from torch.amp.autocast_mode import autocast
+from torch.nn.utils import clip_grad_norm_
 
 from proc.util import utils
 
 from .loss import shift_robust_l2_pertrace_vec
+
+
+def _finite_or_report(name, t, meta=None):
+    """Return True if t is None or all finite. Otherwise print a short report."""
+    if t is None:
+        return True
+    finite = torch.isfinite(t).all()
+    if not finite:
+        bad = (~torch.isfinite(t)).sum().item()
+        msg = f"[NaNGuard] {name} has {bad} non-finite elements"
+        if isinstance(meta, dict):
+            fld = meta.get('field', None)
+            if isinstance(fld, (list, tuple)) and len(fld) > 0:
+                msg += f" field={fld[0]}"
+        print(msg, flush=True)
+    return bool(finite)
 
 
 def _freeze_by_epoch(
@@ -123,21 +140,38 @@ def train_one_epoch(
 	accum_loss_base = 0.0
 	accum_loss_smooth = 0.0
 	accum_loss_curv = 0.0
-	for i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
-		x_masked, x_tgt, mask_or_none, meta = batch
+        for i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
+                x_masked, x_tgt, mask_or_none, meta = batch
 
-		start_time = time.time()
-		x_masked = x_masked.to(device, non_blocking=True)
-		x_tgt = x_tgt.to(device, non_blocking=True)
-		if mask_or_none is not None:
-			mask_or_none = mask_or_none.to(device, non_blocking=True)
-		meta = {
-			k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
-			for k, v in meta.items()
-		}
-		device_type = (
-			'cuda' if torch.cuda.is_available() and 'cuda' in str(device) else 'cpu'
-		)
+                start_time = time.time()
+                x_masked = x_masked.to(device, non_blocking=True)
+                if not (
+                    _finite_or_report("x_masked", x_masked, meta)
+                    and _finite_or_report("target", x_tgt, meta)
+                    and _finite_or_report(
+                        "offsets",
+                        meta.get('offsets') if isinstance(meta, dict) else None,
+                        meta,
+                    )
+                    and _finite_or_report(
+                        "dt_sec",
+                        meta.get('dt_sec') if isinstance(meta, dict) else None,
+                        meta,
+                    )
+                ):
+                    print("[SKIP] non-finite inputs; skipping batch")
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
+                x_tgt = x_tgt.to(device, non_blocking=True)
+                if mask_or_none is not None:
+                        mask_or_none = mask_or_none.to(device, non_blocking=True)
+                meta = {
+                        k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
+                        for k, v in meta.items()
+                }
+                device_type = (
+                        'cuda' if torch.cuda.is_available() and 'cuda' in str(device) else 'cpu'
+                )
 		offs = meta.get('offsets')
 		if offs is not None:
 			# offs: (B, H)
@@ -161,25 +195,33 @@ def train_one_epoch(
 				for k in ('fb_idx', 'offsets', 'dt_sec'):
 					if k in meta and isinstance(meta[k], torch.Tensor):
 						meta[k] = meta[k][keep]
-		with autocast(device_type=device_type, enabled=use_amp):
-			pred = model(x_masked)
-			out = criterion(
-				pred,
-				x_tgt,
-				mask=mask_or_none,
-				fb_idx=meta['fb_idx'],
-				offsets=meta.get('offsets'),
-				dt_sec=meta['dt_sec'],
-			)
-			if isinstance(out, tuple):
-				total_loss, loss_logs = out
-			else:
-				total_loss, loss_logs = out, {}
-			main_loss = total_loss / gradient_accumulation_steps
-		if scaler:
-			scaler.scale(main_loss).backward()
-		else:
-			main_loss.backward()
+                with autocast(device_type=device_type, enabled=use_amp):
+                        pred = model(x_masked)
+                        if not _finite_or_report("logits", pred, meta):
+                                print("[SKIP] non-finite logits; skipping batch")
+                                optimizer.zero_grad(set_to_none=True)
+                                continue
+                        out = criterion(
+                                pred,
+                                x_tgt,
+                                mask=mask_or_none,
+                                fb_idx=meta['fb_idx'],
+                                offsets=meta.get('offsets'),
+                                dt_sec=meta['dt_sec'],
+                        )
+                        if isinstance(out, tuple):
+                                total_loss, loss_logs = out
+                        else:
+                                total_loss, loss_logs = out, {}
+                        if not torch.isfinite(total_loss):
+                                print("[SKIP] non-finite loss; skipping batch")
+                                optimizer.zero_grad(set_to_none=True)
+                                continue
+                        main_loss = total_loss / gradient_accumulation_steps
+                if scaler:
+                        scaler.scale(main_loss).backward()
+                else:
+                        main_loss.backward()
 		accum_loss += main_loss.item()
 		lb = loss_logs.get('base') if loss_logs else None
 		ls = loss_logs.get('smooth') if loss_logs else None
@@ -190,15 +232,18 @@ def train_one_epoch(
 			accum_loss_smooth += ls.item() / gradient_accumulation_steps
 		if lc is not None:
 			accum_loss_curv += lc.item() / gradient_accumulation_steps
-		if (i + 1) % gradient_accumulation_steps == 0:
-			if scaler:
-				scaler.unscale_(optimizer)
-				torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-				scaler.step(optimizer)
-				scaler.update()
-			else:
-				torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-				optimizer.step()
+                if (i + 1) % gradient_accumulation_steps == 0:
+                        if scaler:
+                                try:
+                                        scaler.unscale_(optimizer)
+                                except Exception:
+                                        pass
+                        clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        if scaler:
+                                scaler.step(optimizer)
+                                scaler.update()
+                        else:
+                                optimizer.step()
 			if ema:
 				ema.update(model)
 			optimizer.zero_grad()
