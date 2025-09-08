@@ -5,22 +5,24 @@ import torch.nn.functional as F
 from proc.util.metrics import prepare_fb_windows, snr_improvement_from_cached_windows
 from proc.util.vis import visualize_recon_triplet
 
+from .features import make_offset_channel
 from .predict import cover_all_traces_predict
 
 __all__ = ['eval_synthe', 'val_one_epoch_snr']
 
 
 def val_one_epoch_snr(
-	model,
-	val_loader,
-	device,
-	cfg_snr,
-	visualize: bool = False,
-	viz_batches: tuple[int, ...] = (0,),
-	out_dir=None,
-	writer=None,
-	epoch: int | None = None,
-	is_main_process: bool = True,
+        model,
+        val_loader,
+        device,
+        cfg_snr,
+        visualize: bool = False,
+        viz_batches: tuple[int, ...] = (0,),
+        out_dir=None,
+        writer=None,
+        epoch: int | None = None,
+        is_main_process: bool = True,
+        use_offset_input: bool = False,
 ):
 	"""Evaluate SNR improvement over validation loader."""
 	import matplotlib.pyplot as plt
@@ -30,17 +32,21 @@ def val_one_epoch_snr(
 	for i, (x_masked, x_orig, _, meta) in enumerate(val_loader):
 		x_orig = x_orig.to(device, non_blocking=True)
 		fb_idx = meta['fb_idx'].to(device)
+		x_in = x_orig
+		if use_offset_input and ('offsets' in meta):
+			offs_ch = make_offset_channel(x_orig, meta['offsets'])
+			x_in = torch.cat([x_orig, offs_ch], dim=1)
 		y_full = cover_all_traces_predict(
 			model,
-			x_orig,
-			mask_ratio=cfg_snr.mask_ratio_for_eval,
-			noise_std=getattr(cfg_snr, 'noise_std', 1.0),
-			use_amp=True,
-			device=device,
-			seed=cfg_snr.seed,
-			passes_batch=cfg_snr.passes_batch,
-			mask_noise_mode=getattr(cfg_snr, 'mask_noise_mode', 'replace'),
-		)
+                        x_in,
+                        mask_ratio=cfg_snr.mask_ratio_for_eval,
+                        noise_std=getattr(cfg_snr, 'noise_std', 1.0),
+                        use_amp=True,
+                        device=device,
+                        seed=cfg_snr.seed,
+                        passes_batch=cfg_snr.passes_batch,
+                        mask_noise_mode=getattr(cfg_snr, 'mask_noise_mode', 'replace'),
+                )
 		cache = prepare_fb_windows(
 			fb_idx,
 			W=x_orig.shape[-1],
