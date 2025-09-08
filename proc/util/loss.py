@@ -273,7 +273,78 @@ def make_fb_seg_criterion(cfg_fb):
 			else:
 				logit = logit_raw
 
-			# --- base KL (use masked logits) ---
+			# --- optional trend-based prior --------------------------------------
+			prior_mode = str(getattr(cfg_fb, 'prior_mode', 'logit')).lower()
+			prior_alpha = float(getattr(cfg_fb, 'prior_alpha', 0.1))
+			prior_ce = logit.new_tensor(0.0)
+			use_trend_prior = bool(getattr(cfg_fb, 'use_trend_prior', False))
+			if (
+				use_trend_prior
+				and (offsets is not None)
+				and (dt_sec is not None)
+				and prior_alpha > 0
+			):
+				prob_for_trend = torch.softmax(logit / tau, dim=-1)
+				t_idx = torch.arange(
+					W, device=logit.device, dtype=prob_for_trend.dtype
+				)
+				pos = (prob_for_trend * t_idx).sum(dim=-1)
+				dt = dt_sec.to(pos.device, pos.dtype)
+				dt = dt.view(dt.size(0), 1)
+				pos_sec = pos * dt
+				with torch.no_grad():
+					t_tr, s_tr, v_tr = robust_linear_trend_sections(
+						offsets=offsets.to(pos_sec),
+						t_sec=pos_sec,
+						valid=(fb_idx >= 0),
+						section_len=int(
+							getattr(cfg_fb, 'trend_section', 128)
+						),
+						stride=int(
+							getattr(cfg_fb, 'trend_stride', 64)
+						),
+						huber_c=float(
+							getattr(cfg_fb, 'trend_huber_c', 1.345)
+						),
+						iters=3,
+						vmin=float(
+							getattr(cfg_fb, 'trend_vmin', 500.0)
+						),
+						vmax=float(
+							getattr(cfg_fb, 'trend_vmax', 5000.0)
+						),
+					)
+					prior = gaussian_prior_from_trend(
+						t_trend_sec=t_tr,
+						dt_sec=dt_sec,
+						W=logit.size(-1),
+						sigma_ms=float(
+							getattr(cfg_fb, 'prior_sigma_ms', 20.0)
+						),
+						ref_tensor=logit,
+					)
+					log_prior = torch.log(
+						prior.clamp_min(
+							float(
+								getattr(
+									cfg_fb,
+									'prior_log_eps',
+									1e-4,
+								)
+							)
+						)
+					).to(logit.dtype)
+				if prior_mode == 'logit':
+					logit = logit + prior_alpha * log_prior
+				elif prior_mode == 'kl':
+					log_p = torch.log_softmax(logit / tau, dim=-1)
+					kl_bh = -(prior * log_p).sum(dim=-1)
+					if (fb_idx >= 0).any():
+						prior_ce = kl_bh[(fb_idx >= 0)].mean()
+					else:
+						prior_ce = kl_bh.mean()
+
+			# --- base KL (use masked logits) ------------------------------------
 			base = fb_seg_kl_loss(
 				logit.unsqueeze(1), target, valid_mask=valid_mask, tau=tau, eps=eps
 			)
@@ -281,11 +352,19 @@ def make_fb_seg_criterion(cfg_fb):
 			# downstream uses the masked probabilities
 			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 
+			base_prior = (
+				prior_alpha * prior_ce
+				if (prior_mode == 'kl' and prior_alpha > 0)
+				else base.new_tensor(0.0)
+			)
+
 			if (smooth_lambda <= 0 and smooth2_lambda <= 0) or offsets is None:
-				return base, {
+				total = base + base_prior
+				return total, {
 					'base': base.detach(),
 					'smooth': base.new_tensor(0.0),
 					'curv': base.new_tensor(0.0),
+					'prior': base_prior.detach(),
 				}
 
 			W = prob.size(-1)
@@ -339,11 +418,17 @@ def make_fb_seg_criterion(cfg_fb):
 				den2 = (w2 * v3).sum().clamp_min(1.0)
 				loss_curv = num2 / den2
 
-			total = base + smooth_lambda * smooth + smooth2_lambda * loss_curv
+			total = (
+				base
+				+ smooth_lambda * smooth
+				+ smooth2_lambda * loss_curv
+				+ base_prior
+			)
 			return total, {
 				'base': base.detach(),
 				'smooth': (smooth_lambda * smooth).detach(),
 				'curv': (smooth2_lambda * loss_curv).detach(),
+				'prior': base_prior.detach(),
 			}
 
 		return _criterion
