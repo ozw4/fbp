@@ -24,11 +24,36 @@ import os
 import random
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.distributed as dist
 from torch import nn
+
+
+def collect_field_files(list_name: str, data_root: str):
+	"""configs/<list_name> に書かれたフィールド名ごとに .sgy と .npy を1つずつ集める。"""
+	list_path = Path('/workspace/proc/configs') / list_name
+	with open(list_path) as f:
+		fields = [
+			ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')
+		]
+
+	segy_files, fb_files = [], []
+	for field in fields:
+		d = Path(data_root) / field
+		# .sgy / .segy のどちらでも拾う
+		segy = sorted(list(d.glob('*.sgy')) + list(d.glob('*.segy')))
+		fb = sorted(d.glob('*.npy'))
+		if not segy or not fb:
+			print(f'[warn] No SEG-Y or FB files found in {field}')
+			continue
+		segy_files.append(segy[0])
+		fb_files.append(fb[0])
+	if not segy_files:
+		raise RuntimeError(f'No usable fields in {list_name}')
+	return segy_files, fb_files
 
 
 def set_seed(seed: int = 42):

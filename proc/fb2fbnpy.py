@@ -72,7 +72,7 @@ for field_dir in field_dir_list:
 		print('Error: No or multiple files found in', field_dir)
 		continue
 	with segyio.open(segy_file[0], 'r', ignore_geometry=True) as f:
-		dt = f.bin[segyio.BinField.Interval] / 1e4
+		dt = f.bin[segyio.BinField.Interval] / 1e3
 		nt = f.samples.size
 	maxnt = max(maxnt, nt)
 	print(dt, nt)

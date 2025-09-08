@@ -41,7 +41,7 @@ RUN addgroup --gid $GID $USERNAME && \
 USER $USERNAME
 
 COPY ruff.toml /home/$USERNAME
-ENV PYTHONPATH="${PYTHONPATH}:/workspace/proc/util"
+ENV PYTHONPATH="/workspace:${PYTHONPATH}"
 WORKDIR /workspace
 
 CMD ["/bin/bash"]

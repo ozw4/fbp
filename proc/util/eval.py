@@ -1,8 +1,9 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from metrics import prepare_fb_windows, snr_improvement_from_cached_windows
-from vis import visualize_recon_triplet
+
+from proc.util.metrics import prepare_fb_windows, snr_improvement_from_cached_windows
+from proc.util.vis import visualize_recon_triplet
 
 from .predict import cover_all_traces_predict
 

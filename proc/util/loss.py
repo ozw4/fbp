@@ -5,6 +5,8 @@ import time
 import torch
 import torch.nn.functional as F
 
+from proc.util.velocity_mask import make_velocity_feasible_mask
+
 
 def shift_robust_l2_pertrace_vec(
 	pred: torch.Tensor,  # (B, C, H, W)
@@ -228,7 +230,56 @@ def make_fb_seg_criterion(cfg_fb):
 			**kwargs,
 		) -> torch.Tensor | tuple[torch.Tensor, dict]:
 			valid_mask = (fb_idx >= 0).to(pred.dtype)
-			base = fb_seg_kl_loss(pred, target, valid_mask=valid_mask, tau=tau, eps=eps)
+
+			# --- build masked logits by applying a velocity cone prior ---
+			logit_raw = pred.squeeze(1)  # (B,H,W)
+			B, H, W = logit_raw.shape
+
+			use_vel_mask = bool(getattr(cfg_fb, 'use_vel_mask', False))
+			if use_vel_mask and (offsets is not None) and (dt_sec is not None):
+				velmask = make_velocity_feasible_mask(
+					offsets=offsets,
+					dt_sec=dt_sec,
+					W=W,
+					vmin=float(getattr(cfg_fb, 'vmin_mask', 500.0)),
+					vmax=float(getattr(cfg_fb, 'vmax_mask', 6000.0)),
+					t0_lo_ms=float(getattr(cfg_fb, 't0_lo_ms', -20.0)),
+					t0_hi_ms=float(getattr(cfg_fb, 't0_hi_ms', 80.0)),
+					taper_ms=float(getattr(cfg_fb, 'taper_ms', 10.0)),
+					device=pred.device,
+					dtype=pred.dtype,
+				)
+
+				# ---- SAFE log(mask): fp32で計算 + fp16安全なepsilon + 全ゼロ対策 ----
+				with torch.no_grad():
+					vm32 = velmask.detach().to(torch.float32)  # (B,H,W)
+					# 全ゼロ・トレースを検出
+					has_any = vm32.sum(dim=-1, keepdim=True) > 0  # (B,H,1) bool
+					# 全ゼロのトレースは「マスク無効（=全1）」に差し替え
+					vm32 = torch.where(has_any, vm32, torch.ones_like(vm32))
+
+					eps = float(getattr(cfg_fb, 'vel_log_eps', 1e-4))  # ★ fp16安全
+					neg_large = float(
+						getattr(cfg_fb, 'vel_log_neg', -80.0)
+					)  # ★ ゼロには一定の大負値
+					logmask32 = torch.where(
+						vm32 > 0.0,
+						torch.log(vm32.clamp_min(eps)),
+						torch.full_like(vm32, neg_large),
+					)
+
+				# logits + log(mask)（元dtypeへ）
+				logit = logit_raw + logmask32.to(logit_raw.dtype)
+			else:
+				logit = logit_raw
+
+			# --- base KL (use masked logits) ---
+			base = fb_seg_kl_loss(
+				logit.unsqueeze(1), target, valid_mask=valid_mask, tau=tau, eps=eps
+			)
+
+			# downstream uses the masked probabilities
+			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 
 			if (smooth_lambda <= 0 and smooth2_lambda <= 0) or offsets is None:
 				return base, {
@@ -237,8 +288,6 @@ def make_fb_seg_criterion(cfg_fb):
 					'curv': base.new_tensor(0.0),
 				}
 
-			logit = pred.squeeze(1)
-			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 			W = prob.size(-1)
 			t = torch.arange(W, device=prob.device, dtype=prob.dtype)
 			pos = (prob * t).sum(dim=-1)  # (B,H)
