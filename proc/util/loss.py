@@ -541,6 +541,20 @@ def make_fb_seg_criterion(cfg_fb):
 							)
 						)
 					).to(logit.dtype)
+					eps = 1e-9
+					H = -(
+						prob_for_trend.clamp_min(eps)
+						* prob_for_trend.clamp_min(eps).log()
+					).sum(dim=-1)
+					Hnorm = H / math.log(prob_for_trend.size(-1))
+					conf = 1.0 - Hnorm  # 大きいほど自信あり
+					conf_med = (
+						conf[(fb_idx >= 0)].median()
+						if (fb_idx >= 0).any()
+						else conf.median()
+					)
+				gate_th = float(getattr(cfg_fb, 'prior_conf_gate', 0.5))
+				prior_alpha *= float(conf_med >= gate_th)
 				if prior_mode == 'logit':
 					logit = logit + prior_alpha * log_prior
 				elif prior_mode == 'kl':
