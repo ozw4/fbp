@@ -25,7 +25,7 @@ from proc.util.dataset import MaskedSegyGather
 from proc.util.ema import ModelEMA
 from proc.util.eval import eval_synthe, val_one_epoch_snr
 from proc.util.loss import make_criterion, make_fb_seg_criterion
-from proc.util.model import NetAE, adjust_first_conv_padding
+from proc.util.model import NetAE, adjust_first_conv_padding, inflate_first_conv_in
 from proc.util.predict import cover_all_traces_predict_chunked
 from proc.util.rng_util import worker_init_fn
 from proc.util.train_loop import train_one_epoch
@@ -248,18 +248,21 @@ synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
 
 print(cfg.backbone)
 model = NetAE(
-	backbone=cfg.backbone,
-	pretrained=True,
-	stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
-	pre_stages=2,
-	pre_stage_strides=(
-		(1, 1),
-		(1, 2),
-	),
+        backbone=cfg.backbone,
+        pretrained=True,
+        stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
+        pre_stages=2,
+        pre_stage_strides=(
+                (1, 1),
+                (1, 2),
+        ),
 ).to(device)
 
+if getattr(cfg.model, 'use_offset_input', False):
+        inflate_first_conv_in(model, in_ch=2)
+
 if 'caformer' in cfg.backbone:
-	adjust_first_conv_padding(model.backbone, padding=(3, 3))
+        adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
 if cfg.distributed and cfg.sync_bn:
 	model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -368,48 +371,51 @@ for epoch in range(cfg.start_epoch, epochs):
 	if cfg.distributed:
 		train_sampler.set_epoch(epoch)
 
-	step = train_one_epoch(
-		model=model,
-		criterion=criterion,
-		optimizer=optimizer,
-		lr_scheduler=lr_scheduler,
-		dataloader=train_loader,
-		device=device,
-		epoch=epoch,
-		print_freq=cfg.print_freq,
-		writer=train_writer,
-		use_amp=use_amp,
-		scaler=scaler,
-		ema=ema,
-		gradient_accumulation_steps=1,
-		step=step,
-		freeze_epochs=cfg.freeze_epochs,
-		unfreeze_steps=cfg.unfreeze_steps,
-	)
+        step = train_one_epoch(
+                model=model,
+                criterion=criterion,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+                dataloader=train_loader,
+                device=device,
+                epoch=epoch,
+                print_freq=cfg.print_freq,
+                writer=train_writer,
+                use_amp=use_amp,
+                scaler=scaler,
+                ema=ema,
+                gradient_accumulation_steps=1,
+                step=step,
+                freeze_epochs=cfg.freeze_epochs,
+                unfreeze_steps=cfg.unfreeze_steps,
+                use_offset_input=getattr(cfg.model, 'use_offset_input', False),
+        )
 	eval_model = ema.module if ema else model
 
 	if task == 'recon':
-		snr_dict = val_one_epoch_snr(
-			eval_model,
-			val_loader,
-			device=device,
-			cfg_snr=cfg.snr,
-			visualize=True,
-			writer=valid_writer,
-			epoch=epoch,
-			is_main_process=utils.is_main_process(),
-			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
-			if utils.is_main_process()
-			else (),
-		)
+                snr_dict = val_one_epoch_snr(
+                        eval_model,
+                        val_loader,
+                        device=device,
+                        cfg_snr=cfg.snr,
+                        visualize=True,
+                        writer=valid_writer,
+                        epoch=epoch,
+                        is_main_process=utils.is_main_process(),
+                        viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+                        if utils.is_main_process()
+                        else (),
+                        use_offset_input=getattr(cfg.model, 'use_offset_input', False),
+                )
 
 		# 合成データ推論 & 指標
-		pred = cover_all_traces_predict_chunked(
-			eval_model,
-			synthe_noisy.to(device),
-			mask_noise_mode=cfg.dataset.mask_mode,
-			noise_std=cfg.dataset.mask_noise_std,
-		)
+                pred = cover_all_traces_predict_chunked(
+                        eval_model,
+                        synthe_noisy.to(device),
+                        mask_noise_mode=cfg.dataset.mask_mode,
+                        noise_std=cfg.dataset.mask_noise_std,
+                        use_offset_input=getattr(cfg.model, 'use_offset_input', False),
+                )
 		synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
 		for i in range(len(synthe_noisy)):
 			visualize_pair_quartet(

@@ -3,6 +3,7 @@ import numpy as np
 import torch
 
 from proc.util.velocity_mask import make_velocity_feasible_mask
+from proc.util.features import make_offset_channel
 
 __all__ = ['val_one_epoch_fbseg', 'visualize_fb_seg_triplet']
 
@@ -99,10 +100,18 @@ def val_one_epoch_fbseg(
 	n_valid = 0
 	cfg_fb = cfg.loss.fb_seg
 	for i, (x, _, _, meta) in enumerate(val_loader):
-		x = x.to(device, non_blocking=True)
-		fb = meta['fb_idx'].to(device)
-		logits = model(x)
-		logit_raw = logits.squeeze(1)
+                x = x.to(device, non_blocking=True)
+                fb = meta['fb_idx'].to(device)
+                x_in = x
+                if (
+                        cfg is not None
+                        and getattr(getattr(cfg, 'model', None), 'use_offset_input', False)
+                        and ('offsets' in meta)
+                ):
+                        offs_ch = make_offset_channel(x, meta['offsets'])
+                        x_in = torch.cat([x, offs_ch], dim=1)
+                logits = model(x_in)
+                logit_raw = logits.squeeze(1)
 		B, H, W = logit_raw.shape
 
 		# === Always apply velocity-cone mask (match training) ===

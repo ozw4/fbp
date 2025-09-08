@@ -199,10 +199,11 @@ class MaskedSegyGather(Dataset):
 			x = np.concatenate([x, pad_tr], axis=0)
 		x = x - np.mean(x, axis=1, keepdims=True)
 		x = x / (np.std(x, axis=1, keepdims=True) + 1e-10)
-		if self.flip and random.random() < 0.5:
-			x = np.flip(x, axis=0).copy()
-			fb_subset = fb_subset[::-1].copy()
-			off_subset = off_subset[::-1].copy()
+                do_flip = self.flip and random.random() < 0.5
+                if do_flip:
+                        x = np.flip(x, axis=0).copy()
+                        fb_subset = fb_subset[::-1].copy()
+                        off_subset = off_subset[::-1].copy()
 		factor = 1.0
 		if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
 			factor = random.uniform(*self.augment_time_range)

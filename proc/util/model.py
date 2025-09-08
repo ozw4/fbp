@@ -5,6 +5,44 @@ import torch.nn.functional as F
 from torch import nn
 
 
+def inflate_first_conv_in(model: nn.Module, in_ch: int) -> None:
+        """Replace first Conv2d to accept ``in_ch`` inputs by channel-averaging existing weights.
+        Tries common timm patterns: ``backbone.patch_embed.proj`` or ``backbone.stem[0]``.
+        Idempotent: if already matching, do nothing.
+        """
+        bb = getattr(model, "backbone", model)
+
+        conv = None
+        pe = getattr(bb, "patch_embed", None)
+        if pe is not None and hasattr(pe, "proj"):
+                conv = pe.proj
+        if conv is None and hasattr(bb, "stem"):
+                if (
+                        isinstance(bb.stem, nn.Sequential)
+                        and len(bb.stem) > 0
+                        and isinstance(bb.stem[0], nn.Conv2d)
+                ):
+                        conv = bb.stem[0]
+        if conv is None:
+                for m in bb.modules():
+                        if isinstance(m, nn.Conv2d):
+                                conv = m
+                                break
+
+        if conv is None:
+                print("[warn] inflate_first_conv_in: first conv not found; skipped")
+                return
+        if conv.in_channels == in_ch:
+                return
+
+        with torch.no_grad():
+                W = conv.weight  # (out_c, old_in, kH, kW)
+                W_new = W.mean(dim=1, keepdim=True).repeat(1, in_ch, 1, 1).clone()
+                conv.weight = nn.Parameter(W_new)
+                conv.in_channels = in_ch
+        print(f"[model] inflated first conv to in_ch={in_ch}")
+
+
 def adjust_first_conv_padding(backbone: nn.Module, padding=(1, 1)):
 	"""backboneの最初のConvだけpaddingを上書き"""
 	for m in backbone.modules():
