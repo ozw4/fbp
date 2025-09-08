@@ -102,7 +102,7 @@ def debug_prior_visual(
 				sec_dir.mkdir(parents=True, exist_ok=True)
 
 				# ---- ロバスト回帰（このアイテムのみ）----
-				t_tr, s_tr, v_tr, _wconf = robust_linear_trend_sections(
+				t_tr, s_tr, v_tr, _wconf, covered = robust_linear_trend_sections(
 					offsets=offsets[b : b + 1],  # (1,H)
 					t_sec=pos_sec[b : b + 1],  # (1,H)
 					valid=valid[b : b + 1],  # (1,H)
@@ -123,6 +123,7 @@ def debug_prior_visual(
 					W=W,
 					sigma_ms=prior_sigma_ms,
 					ref_tensor=logits[b : b + 1],
+                                        covered_mask=covered,
 				)  # (1,H,W)
 
 				# ---- 数値診断 ----
