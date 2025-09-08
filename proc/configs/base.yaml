@@ -130,6 +130,7 @@ loss:
     trend_vmin: 500.0          # トレンド推定での下限速度 [m/s]
     trend_vmax: 6000.0         # トレンド推定での上限速度 [m/s]
     prior_log_eps: 1.0e-4      # priorのlog安定化用 ε
+    prior_conf_gate: 0.5
 debug:
   audit_batches: 50          # 0 disables the audit
   audit_cov_threshold: 0.5   # coverage threshold to flag low-coverage valid traces
