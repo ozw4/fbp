@@ -11,18 +11,18 @@ __all__ = ['cover_all_traces_predict', 'cover_all_traces_predict_chunked']
 
 @torch.no_grad()
 def cover_all_traces_predict(
-        model: torch.nn.Module,
-        x: torch.Tensor,
-        *,
-        mask_ratio: float = 0.5,
-        noise_std: float = 1.0,
-        mask_noise_mode: Literal['replace', 'add'] = 'replace',
-        use_amp: bool = True,
-        device=None,
-        seed: int | None = 12345,
-        passes_batch: int = 4,
-        offsets: torch.Tensor | None = None,
-        use_offset_input: bool = False,
+		model: torch.nn.Module,
+		x: torch.Tensor,
+		*,
+		mask_ratio: float = 0.5,
+		noise_std: float = 1.0,
+		mask_noise_mode: Literal['replace', 'add'] = 'replace',
+		use_amp: bool = True,
+		device=None,
+		seed: int | None = 12345,
+		passes_batch: int = 4,
+		offsets: torch.Tensor | None = None,
+		use_offset_input: bool = False,
 ) -> torch.Tensor:
 	"""Predict each trace by covering all traces once.
 
@@ -43,59 +43,59 @@ def cover_all_traces_predict(
 		else:
 			perm = torch.randperm(H)
 		chunks = [perm[i : i + m] for i in range(0, H, m)]
-                for s in range(0, K, passes_batch):
-                        batch_chunks = chunks[s : s + passes_batch]
-                        xmb = []
-                        for idxs in batch_chunks:
-                                xm = x[b : b + 1].clone()
-                                if seed is not None:
-                                        gk = torch.Generator(device='cpu').manual_seed(
-                                                (seed + b) * 100003 + s * 1009 + int(idxs[0])
-                                        )
-                                        n = (
-                                                torch.randn((1, 1, len(idxs), W), generator=gk, device='cpu')
-                                                * noise_std
-                                        )
-                                else:
-                                        n = torch.randn((1, 1, len(idxs), W), device='cpu') * noise_std
-                                n = n.to(device=device, non_blocking=True)
-                                idxs_dev = idxs.to(device)
-                                if mask_noise_mode == 'replace':
-                                        xm[:, :, idxs_dev, :] = n
-                                elif mask_noise_mode == 'add':
-                                        xm[:, :, idxs_dev, :] += n
-                                else:
-                                        raise ValueError(f'Invalid mask_noise_mode: {mask_noise_mode}')
-                                if use_offset_input and offsets is not None:
-                                        off_b = offsets[b : b + 1]
-                                        offs_ch = make_offset_channel(xm, off_b)
-                                        xm = torch.cat([xm, offs_ch], dim=1)
-                                xmb.append(xm)
-                        xmb = torch.cat(xmb, dim=0)
-                        dev_type = 'cuda' if xmb.is_cuda else 'cpu'
-                        with autocast(device_type=dev_type, enabled=use_amp):
-                                yb = model(xmb)
-                        for k, idxs in enumerate(batch_chunks):
-                                y_full[b, :, idxs.to(device), :] = yb[k, :, idxs.to(device), :]
-        return y_full
+				for s in range(0, K, passes_batch):
+						batch_chunks = chunks[s : s + passes_batch]
+						xmb = []
+						for idxs in batch_chunks:
+								xm = x[b : b + 1].clone()
+								if seed is not None:
+										gk = torch.Generator(device='cpu').manual_seed(
+												(seed + b) * 100003 + s * 1009 + int(idxs[0])
+										)
+										n = (
+												torch.randn((1, 1, len(idxs), W), generator=gk, device='cpu')
+												* noise_std
+										)
+								else:
+										n = torch.randn((1, 1, len(idxs), W), device='cpu') * noise_std
+								n = n.to(device=device, non_blocking=True)
+								idxs_dev = idxs.to(device)
+								if mask_noise_mode == 'replace':
+										xm[:, :, idxs_dev, :] = n
+								elif mask_noise_mode == 'add':
+										xm[:, :, idxs_dev, :] += n
+								else:
+										raise ValueError(f'Invalid mask_noise_mode: {mask_noise_mode}')
+								if use_offset_input and offsets is not None:
+										off_b = offsets[b : b + 1]
+										offs_ch = make_offset_channel(xm, off_b)
+										xm = torch.cat([xm, offs_ch], dim=1)
+								xmb.append(xm)
+						xmb = torch.cat(xmb, dim=0)
+						dev_type = 'cuda' if xmb.is_cuda else 'cpu'
+						with autocast(device_type=dev_type, enabled=use_amp):
+								yb = model(xmb)
+						for k, idxs in enumerate(batch_chunks):
+								y_full[b, :, idxs.to(device), :] = yb[k, :, idxs.to(device), :]
+		return y_full
 
 
 @torch.no_grad()
 def cover_all_traces_predict_chunked(
-        model: torch.nn.Module,
-        x: torch.Tensor,
-        *,
-        chunk_h: int = 128,
-        overlap: int = 32,
-        mask_ratio: float = 0.5,
-        noise_std: float = 1.0,
-        mask_noise_mode: Literal['replace', 'add'] = 'replace',
-        use_amp: bool = True,
-        device=None,
-        seed: int = 12345,
-        passes_batch: int = 4,
-        offsets: torch.Tensor | None = None,
-        use_offset_input: bool = False,
+		model: torch.nn.Module,
+		x: torch.Tensor,
+		*,
+		chunk_h: int = 128,
+		overlap: int = 32,
+		mask_ratio: float = 0.5,
+		noise_std: float = 1.0,
+		mask_noise_mode: Literal['replace', 'add'] = 'replace',
+		use_amp: bool = True,
+		device=None,
+		seed: int = 12345,
+		passes_batch: int = 4,
+		offsets: torch.Tensor | None = None,
+		use_offset_input: bool = False,
 ) -> torch.Tensor:
 	"""Apply cover_all_traces_predict on tiled H-axis chunks.
 
@@ -113,20 +113,20 @@ def cover_all_traces_predict_chunked(
 	while s < H:
 		e = min(s + chunk_h, H)
 		xt = x[:, :, s:e, :]
-                offs_t = offsets[:, s:e] if offsets is not None else None
-                yt = cover_all_traces_predict(
-                        model,
-                        xt,
-                        mask_ratio=mask_ratio,
-                        noise_std=noise_std,
-                        mask_noise_mode=mask_noise_mode,
-                        use_amp=use_amp,
-                        device=device,
-                        seed=seed + s,
-                        passes_batch=passes_batch,
-                        offsets=offs_t,
-                        use_offset_input=use_offset_input,
-                )
+				offs_t = offsets[:, s:e] if offsets is not None else None
+				yt = cover_all_traces_predict(
+						model,
+						xt,
+						mask_ratio=mask_ratio,
+						noise_std=noise_std,
+						mask_noise_mode=mask_noise_mode,
+						use_amp=use_amp,
+						device=device,
+						seed=seed + s,
+						passes_batch=passes_batch,
+						offsets=offs_t,
+						use_offset_input=use_offset_input,
+				)
 		h_t = e - s
 		w = torch.ones((1, 1, h_t, 1), dtype=x.dtype, device=device)
 		left_ov = min(overlap, s)

@@ -6,8 +6,8 @@ from torch.nn.utils import clip_grad_norm_
 
 from proc.util import utils
 
-from .loss import shift_robust_l2_pertrace_vec
 from .features import make_offset_channel
+from .loss import shift_robust_l2_pertrace_vec
 
 
 def _finite_or_report(name, t, meta=None):
@@ -35,16 +35,16 @@ def _freeze_by_epoch(
 	Parameters
 	----------
 	model: torch.nn.Module
-	    Network with ``decoder`` and ``seg_head`` attributes.
+		Network with ``decoder`` and ``seg_head`` attributes.
 	epoch: int
-	    Current epoch index (0-based).
+		Current epoch index (0-based).
 	freeze_epochs: int
-	    Number of initial epochs during which only the head and the last
-	    decoder blocks are trained.
+		Number of initial epochs during which only the head and the last
+		decoder blocks are trained.
 	unfreeze_steps: int
-	    After ``freeze_epochs`` epochs, additional decoder blocks are
-	    unfrozen every ``unfreeze_steps`` epochs. Once all decoder blocks are
-	    unfrozen, the encoder (pre/down/backbone) is unfrozen as well.
+		After ``freeze_epochs`` epochs, additional decoder blocks are
+		unfrozen every ``unfreeze_steps`` epochs. Once all decoder blocks are
+		unfrozen, the encoder (pre/down/backbone) is unfrozen as well.
 
 	"""
 	if freeze_epochs <= 0 and unfreeze_steps <= 0:
@@ -109,8 +109,8 @@ def train_one_epoch(
 	max_shift=5,
 	step: int = 0,
 	freeze_epochs: int = 0,
-        unfreeze_steps: int = 1,
-        use_offset_input: bool = False,
+		unfreeze_steps: int = 1,
+		use_offset_input: bool = False,
 ):
 	"""Run one training epoch."""
 	if getattr(model, '_transfer_loaded', False) and freeze_epochs > 0:
@@ -190,14 +190,14 @@ def train_one_epoch(
 				for k in ('fb_idx', 'offsets', 'dt_sec'):
 					if k in meta and isinstance(meta[k], torch.Tensor):
 						meta[k] = meta[k][keep]
-                with autocast(device_type=device_type, enabled=use_amp):
-                        x_in = x_masked
-                        if use_offset_input and ('offsets' in meta):
-                                offs_ch = make_offset_channel(x_masked, meta['offsets'])
-                                x_in = torch.cat([x_masked, offs_ch], dim=1)
-                        pred = model(x_in)
-                        if not _finite_or_report("logits", pred, meta):
-                                print("[SKIP] non-finite logits; skipping batch")
+				with autocast(device_type=device_type, enabled=use_amp):
+						x_in = x_masked
+						if use_offset_input and ('offsets' in meta):
+								offs_ch = make_offset_channel(x_masked, meta['offsets'])
+								x_in = torch.cat([x_masked, offs_ch], dim=1)
+						pred = model(x_in)
+						if not _finite_or_report("logits", pred, meta):
+								print("[SKIP] non-finite logits; skipping batch")
 				optimizer.zero_grad(set_to_none=True)
 				continue
 			out = criterion(

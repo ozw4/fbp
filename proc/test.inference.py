@@ -23,24 +23,24 @@ from proc.util.features import make_offset_channel
 
 @torch.no_grad()
 def debug_prior_visual(
-        model,
-        loader,
-        device,
-        cfg_fb,
-        outdir='debug_prior_sections',
-        num_traces_to_plot=6,
-        max_sections=20,  # 走査するセクション数（アイテム数）の上限
-        section_stride=1,  # 等間引き（例: 5 なら 0,5,10,... を処理）
-        use_offset_input: bool = False,
+		model,
+		loader,
+		device,
+		cfg_fb,
+		outdir='debug_prior_sections',
+		num_traces_to_plot=6,
+		max_sections=20,  # 走査するセクション数（アイテム数）の上限
+		section_stride=1,  # 等間引き（例: 5 なら 0,5,10,... を処理）
+		use_offset_input: bool = False,
 ):
 	"""DataLoader の“各セクション（=各アイテム）”単位で:
-	  推論 -> pos_sec -> ロバスト回帰 -> ガウスprior -> 数値診断/可視化 を実行。
+	推論 -> pos_sec -> ロバスト回帰 -> ガウスprior -> 数値診断/可視化 を実行。
 
 	生成物:
-	  - outdir/section_XXXXX/trace_prob_vs_prior.png
-	  - outdir/section_XXXXX/trend_over_offsets.png
-	  - outdir/section_XXXXX/vtrend_over_offsets.png
-	  - outdir/summary.csv（residual/CE の要約）
+	- outdir/section_XXXXX/trace_prob_vs_prior.png
+	- outdir/section_XXXXX/trend_over_offsets.png
+	- outdir/section_XXXXX/vtrend_over_offsets.png
+	- outdir/summary.csv（residual/CE の要約）
 	"""
 	model.eval()
 	outdir = Path(outdir)
@@ -81,13 +81,13 @@ def debug_prior_visual(
 			if section_counter >= max_sections:
 				break
 
-                        x_masked, x_tgt, mask_or_none, meta = batch
-                        x_masked = x_masked.to(device, non_blocking=True)
-                        x_in = x_masked
-                        if use_offset_input and ('offsets' in meta):
-                                offs_ch = make_offset_channel(x_masked, meta['offsets'])
-                                x_in = torch.cat([x_masked, offs_ch], dim=1)
-                        logits = model(x_in)  # (B,1,H,W)
+						x_masked, x_tgt, mask_or_none, meta = batch
+						x_masked = x_masked.to(device, non_blocking=True)
+						x_in = x_masked
+						if use_offset_input and ('offsets' in meta):
+								offs_ch = make_offset_channel(x_masked, meta['offsets'])
+								x_in = torch.cat([x_masked, offs_ch], dim=1)
+						logits = model(x_in)  # (B,1,H,W)
 			logit = logits.squeeze(1)  # (B,H,W)
 			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 			B, H, W = prob.shape
@@ -348,18 +348,18 @@ val_loader = DataLoader(
 
 # ---- 5) モデル構築 ----
 model = NetAE(
-        backbone=cfg.backbone,
-        pretrained=True,
-        stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
-        pre_stages=2,
-        pre_stage_strides=((1, 1), (1, 2)),
+		backbone=cfg.backbone,
+		pretrained=True,
+		stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
+		pre_stages=2,
+		pre_stage_strides=((1, 1), (1, 2)),
 ).to(device)
 
 if getattr(cfg.model, 'use_offset_input', False):
-        inflate_first_conv_in(model, in_ch=2)
+		inflate_first_conv_in(model, in_ch=2)
 
 if 'caformer' in cfg.backbone:
-        adjust_first_conv_padding(model.backbone, padding=(3, 3))
+		adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
 # ---- 6) 重みの読み込み（EMA優先, なければ通常）----
 if getattr(cfg, 'resume', None):
@@ -376,17 +376,17 @@ model.eval()
 
 # ---- 7) 動作確認（任意）：1バッチ取り出してデバイスに載せる ----
 if len(valid_dataset) > 0:
-        x_masked, x_tgt, mask_or_none, meta = next(iter(val_loader))
-        x_masked = x_masked.to(device, non_blocking=True)
-        x_in = x_masked
-        if getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
-                offs_ch = make_offset_channel(x_masked, meta['offsets'])
-                x_in = torch.cat([x_masked, offs_ch], dim=1)
-        with torch.no_grad():
-                _ = model(x_in)
-        print('[check] val_loader 取り回し & モデル推論 OK')
+		x_masked, x_tgt, mask_or_none, meta = next(iter(val_loader))
+		x_masked = x_masked.to(device, non_blocking=True)
+		x_in = x_masked
+		if getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
+				offs_ch = make_offset_channel(x_masked, meta['offsets'])
+				x_in = torch.cat([x_masked, offs_ch], dim=1)
+		with torch.no_grad():
+				_ = model(x_in)
+		print('[check] val_loader 取り回し & モデル推論 OK')
 else:
-        print('[check] valid_dataset が空です')
+		print('[check] valid_dataset が空です')
 
 
 # ---- 1) Config / device ----
@@ -470,18 +470,18 @@ val_loader = DataLoader(
 
 # ---- 5) モデル構築 ----
 model = NetAE(
-        backbone=cfg.backbone,
-        pretrained=True,
-        stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
-        pre_stages=2,
-        pre_stage_strides=((1, 1), (1, 2)),
+		backbone=cfg.backbone,
+		pretrained=True,
+		stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
+		pre_stages=2,
+		pre_stage_strides=((1, 1), (1, 2)),
 ).to(device)
 
 if getattr(cfg.model, 'use_offset_input', False):
-        inflate_first_conv_in(model, in_ch=2)
+		inflate_first_conv_in(model, in_ch=2)
 
 if 'caformer' in cfg.backbone:
-        adjust_first_conv_padding(model.backbone, padding=(3, 3))
+		adjust_first_conv_padding(model.backbone, padding=(3, 3))
 
 # ---- 6) 重みの読み込み（EMA優先, なければ通常）----
 weight = '/workspace/proc/result/fb_seg/train_field_list_wotstkres_edgenext_b36.sail_in22k_ft_in1k_finetune_augspace01/model_180.pth'
@@ -493,13 +493,13 @@ print(f'[load] missing={len(missing)} unexpected={len(unexpected)} from {cfg.res
 model.eval()
 
 debug_prior_visual(
-        model,
-        val_loader,
-        device,
-        cfg.loss.fb_seg,
-        outdir='debug_prior',
-        num_traces_to_plot=6,
-        use_offset_input=getattr(cfg.model, 'use_offset_input', False),
+		model,
+		val_loader,
+		device,
+		cfg.loss.fb_seg,
+		outdir='debug_prior',
+		num_traces_to_plot=6,
+		use_offset_input=getattr(cfg.model, 'use_offset_input', False),
 )
 
 # %%
