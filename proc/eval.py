@@ -1,7 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
+
+from proc.util.velocity_mask import make_velocity_feasible_mask
 
 __all__ = ['val_one_epoch_fbseg', 'visualize_fb_seg_triplet']
 
@@ -12,13 +13,13 @@ def visualize_fb_seg_triplet(
 	"""Visualize input amplitude, probability heatmap, and overlay of predictions.
 
 	Args:
-	    x: Input tensor of shape ``(B,1,H,W)``.
-	    prob: Probability tensor of shape ``(B,H,W)``.
-	    fb_idx: Ground-truth indices of shape ``(B,H)`` with ``-1`` as invalid.
-	    b: Batch index to visualize.
-	    writer: Optional TensorBoard writer.
-	    tag_prefix: Tag prefix for TensorBoard.
-	    global_step: Global step for TensorBoard.
+		x: Input tensor of shape ``(B,1,H,W)``.
+		prob: Probability tensor of shape ``(B,H,W)``.
+		fb_idx: Ground-truth indices of shape ``(B,H)`` with ``-1`` as invalid.
+		b: Batch index to visualize.
+		writer: Optional TensorBoard writer.
+		tag_prefix: Tag prefix for TensorBoard.
+		global_step: Global step for TensorBoard.
 
 	"""
 	x_img = x[b, 0].detach().cpu().numpy()
@@ -82,11 +83,12 @@ def val_one_epoch_fbseg(
 	writer=None,
 	epoch=0,
 	viz_batches=(0,),
+	cfg=None,
 ):
 	"""Validate first-break segmentation model over one epoch.
 
 	Returns:
-	    dict: Metrics containing hit@4, hit@8, and number of valid traces.
+		dict: Metrics containing hit@4, hit@8, and number of valid traces.
 
 	"""
 	model.eval()
@@ -95,11 +97,37 @@ def val_one_epoch_fbseg(
 	hit4 = 0
 	hit8 = 0
 	n_valid = 0
+	cfg_fb = cfg.loss.fb_seg
 	for i, (x, _, _, meta) in enumerate(val_loader):
 		x = x.to(device, non_blocking=True)
 		fb = meta['fb_idx'].to(device)
 		logits = model(x)
-		prob = F.softmax(logits.squeeze(1), dim=-1)
+		logit_raw = logits.squeeze(1)
+		B, H, W = logit_raw.shape
+
+		# === Always apply velocity-cone mask (match training) ===
+		velmask = make_velocity_feasible_mask(
+			offsets=meta['offsets'],
+			dt_sec=meta['dt_sec'],
+			W=W,
+			vmin=float(getattr(cfg_fb, 'vmin_mask', 500.0)),
+			vmax=float(getattr(cfg_fb, 'vmax_mask', 10000.0)),
+			t0_lo_ms=float(getattr(cfg_fb, 't0_lo_ms', -100.0)),
+			t0_hi_ms=float(getattr(cfg_fb, 't0_hi_ms', 80.0)),
+			taper_ms=float(getattr(cfg_fb, 'taper_ms', 10.0)),
+			device=logit_raw.device,
+			dtype=logit_raw.dtype,
+		)
+		# fp32で安全にlogを作ってからdtypeを合わせる
+		vm32 = velmask.to(torch.float32)
+		has_any = vm32.sum(dim=-1, keepdim=True) > 0
+		vm32 = torch.where(has_any, vm32, torch.ones_like(vm32))
+		eps = float(getattr(cfg_fb, 'vel_log_eps', 1e-4))
+		logmask32 = torch.log(vm32.clamp_min(eps))
+		logit = logit_raw + logmask32.to(logit_raw.dtype)
+
+		tau = float(getattr(cfg_fb, 'tau', 1.0))
+		prob = torch.softmax(logit / tau, dim=-1)
 		pred = prob.argmax(dim=-1)
 		valid = fb >= 0
 		diff = (pred - fb).abs()

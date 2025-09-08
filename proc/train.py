@@ -495,6 +495,7 @@ for epoch in range(cfg.start_epoch, epochs):
 			writer=valid_writer,
 			epoch=epoch,
 			viz_batches=(0, 1, 2, 3, 4),
+			cfg=cfg,
 		)
 		if utils.is_main_process():
 			valid_writer.add_scalar('fbseg/hit_at_0', fb_metrics['hit@0'], epoch)
