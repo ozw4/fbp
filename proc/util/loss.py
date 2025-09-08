@@ -573,6 +573,7 @@ def make_fb_seg_criterion(cfg_fb):
 						'[NaNGuard] logit non-finite after adding prior'
 					)
 			elif prior_mode == 'kl':
+				log_p = torch.log_softmax(logit / tau, dim=-1)
 				kl_bh = -(prior * log_p).sum(dim=-1)
 				use = (fb_idx >= 0) & covered  # ← 未カバー trace は平均から除外
 				prior_ce = kl_bh[use].mean() if use.any() else kl_bh.mean()
