@@ -468,6 +468,8 @@ def make_fb_seg_criterion(cfg_fb):
 				# ---- SAFE log(mask): fp32で計算 + fp16安全なepsilon + 全ゼロ対策 ----
 				with torch.no_grad():
 					vm32 = velmask.detach().to(torch.float32)  # (B,H,W)
+					# ensure finite in [0,1]
+					vm32 = torch.nan_to_num(vm32, nan=0.0, posinf=0.0, neginf=0.0).clamp_(0.0, 1.0)
 					# 全ゼロ・トレースを検出
 					has_any = vm32.sum(dim=-1, keepdim=True) > 0  # (B,H,1) bool
 					# 全ゼロのトレースは「マスク無効（=全1）」に差し替え
@@ -489,6 +491,13 @@ def make_fb_seg_criterion(cfg_fb):
 				logit = logit_raw + logmask32.to(logit_raw.dtype)
 			else:
 				logit = logit_raw
+				# ---- Clip logits to avoid exp overflow in softmax ----
+				logit_clip = float(getattr(cfg_fb, 'logit_clip', 30.0))
+				logit = logit.clamp(-logit_clip, logit_clip)
+				# ---- NaN guard on logits ----
+				if not torch.isfinite(logit).all():
+					bad = (~torch.isfinite(logit)).sum().item()
+					raise FloatingPointError(f"[NaNGuard] logit has {bad} non-finite elements")
 
 			# --- optional trend-based prior --------------------------------------
 			prior_mode = str(getattr(cfg_fb, 'prior_mode', 'logit')).lower()
@@ -503,6 +512,8 @@ def make_fb_seg_criterion(cfg_fb):
 				and prior_alpha > 0
 			):
 				prob_for_trend = torch.softmax(logit / tau, dim=-1)
+				if not torch.isfinite(prob_for_trend).all():
+					raise FloatingPointError("[NaNGuard] prob_for_trend non-finite")
 				t_idx = torch.arange(W, device=logit.device, dtype=prob_for_trend.dtype)
 				pos = (prob_for_trend * t_idx).sum(dim=-1)
 				dt = dt_sec.to(pos.device, pos.dtype)
@@ -522,43 +533,39 @@ def make_fb_seg_criterion(cfg_fb):
 						prob=prob_for_trend,
 						dt_sec=dt_sec,
 					)
-					prior = gaussian_prior_from_trend(
-						t_trend_sec=t_tr,
-						dt_sec=dt_sec,
-						W=logit.size(-1),
-						sigma_ms=float(getattr(cfg_fb, 'prior_sigma_ms', 20.0)),
-						ref_tensor=logit,
-						covered_mask=covered,
-					)
-					log_prior = torch.log(
-						prior.clamp_min(
-							float(
-								getattr(
-									cfg_fb,
-									'prior_log_eps',
-									1e-4,
-								)
-							)
-						)
-					).to(logit.dtype)
-					eps = 1e-9
-					H = -(
-						prob_for_trend.clamp_min(eps)
-						* prob_for_trend.clamp_min(eps).log()
-					).sum(dim=-1)
-					Hnorm = H / math.log(prob_for_trend.size(-1))
-					conf = 1.0 - Hnorm  # 大きいほど自信あり
-					conf_med = (
+				prior = gaussian_prior_from_trend(
+					t_trend_sec=t_tr,
+					dt_sec=dt_sec,
+					W=logit.size(-1),
+					sigma_ms=float(getattr(cfg_fb, 'prior_sigma_ms', 20.0)),
+					ref_tensor=logit,
+					covered_mask=covered,
+				)
+				# normalize & safe log in fp32
+				prior = torch.nan_to_num(prior, nan=0.0).clamp_(min=0.0)
+				prior = prior / prior.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+				prior_log_eps = float(getattr(cfg_fb, 'prior_log_eps', 1e-4))
+				log_prior = torch.log(prior.clamp_min(prior_log_eps)).to(torch.float32)
+				eps = 1e-9
+				H = -(
+					prob_for_trend.clamp_min(eps)
+					* prob_for_trend.clamp_min(eps).log()
+				).sum(dim=-1)
+				Hnorm = H / math.log(prob_for_trend.size(-1))
+				conf = 1.0 - Hnorm  # 大きいほど自信あり
+				conf_med = (
 						conf[(fb_idx >= 0)].median()
 						if (fb_idx >= 0).any()
 						else conf.median()
 					)
 				gate_th = float(getattr(cfg_fb, 'prior_conf_gate', 0.5))
 				prior_alpha *= float(conf_med >= gate_th)
-				if prior_mode == 'logit':
-					logit = logit + prior_alpha * log_prior
-				elif prior_mode == 'kl':
-					log_p = torch.log_softmax(logit / tau, dim=-1)
+			if prior_mode == 'logit':
+				logit = (logit.to(torch.float32) + prior_alpha * log_prior).to(logit.dtype)
+				logit = logit.clamp(-logit_clip, logit_clip)
+				if not torch.isfinite(logit).all():
+					raise FloatingPointError("[NaNGuard] logit non-finite after adding prior")
+			elif prior_mode == "kl":
 					kl_bh = -(prior * log_p).sum(dim=-1)
 					use = (fb_idx >= 0) & covered  # ← 未カバー trace は平均から除外
 					prior_ce = kl_bh[use].mean() if use.any() else kl_bh.mean()
