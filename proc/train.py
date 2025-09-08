@@ -9,29 +9,28 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import utils
-from ema import ModelEMA
-from eval import val_one_epoch_fbseg
 from hydra import compose, initialize
-from loss import make_criterion, make_fb_seg_criterion
-from model import NetAE, adjust_first_conv_padding
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard.writer import SummaryWriter
-from util import (
-	MaskedSegyGather,
-	cover_all_traces_predict_chunked,
-	eval_synthe,
-	load_synth_pair,
-	segy_collate,
-	train_one_epoch,
-	val_one_epoch_snr,
-	worker_init_fn,
-)
-from utils import WarmupCosineScheduler, set_seed
-from vis import visualize_pair_quartet
+
+from proc.eval import val_one_epoch_fbseg
+from proc.util import utils
+from proc.util.audit import audit_offsets_and_mask_coverage
+from proc.util.collate import segy_collate
+from proc.util.data_io import load_synth_pair
+from proc.util.dataset import MaskedSegyGather
+from proc.util.ema import ModelEMA
+from proc.util.eval import eval_synthe, val_one_epoch_snr
+from proc.util.loss import make_criterion, make_fb_seg_criterion
+from proc.util.model import NetAE, adjust_first_conv_padding
+from proc.util.predict import cover_all_traces_predict_chunked
+from proc.util.rng_util import worker_init_fn
+from proc.util.train_loop import train_one_epoch
+from proc.util.utils import WarmupCosineScheduler, collect_field_files, set_seed
+from proc.util.vis import visualize_pair_quartet
 
 
 def load_state_dict_excluding(
@@ -81,30 +80,6 @@ output_path = Path(f'./result/{task}/{train_field_list.split(".")[0]}_{cfg.suffi
 
 utils.mkdir(output_path)
 shutil.copy2('/workspace/proc/configs/base.yaml', output_path / 'config.yaml')
-
-
-def collect_field_files(list_name: str, data_root: str):
-	"""configs/<list_name> に書かれたフィールド名ごとに .sgy と .npy を1つずつ集める。"""
-	list_path = Path('/workspace/proc/configs') / list_name
-	with open(list_path) as f:
-		fields = [
-			ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')
-		]
-
-	segy_files, fb_files = [], []
-	for field in fields:
-		d = Path(data_root) / field
-		# .sgy / .segy のどちらでも拾う
-		segy = sorted(list(d.glob('*.sgy')) + list(d.glob('*.segy')))
-		fb = sorted(d.glob('*.npy'))
-		if not segy or not fb:
-			print(f'[warn] No SEG-Y or FB files found in {field}')
-			continue
-		segy_files.append(segy[0])
-		fb_files.append(fb[0])
-	if not segy_files:
-		raise RuntimeError(f'No usable fields in {list_name}')
-	return segy_files, fb_files
 
 
 train_segy_files, train_fb_files = collect_field_files(
@@ -237,6 +212,24 @@ val_loader = DataLoader(
 	drop_last=False,
 	worker_init_fn=worker_init_fn,
 )
+
+# -------- DEBUG AUDIT (run once before training) --------
+try:
+	audit_batches = int(getattr(getattr(cfg, 'debug', object()), 'audit_batches', 50))
+	cov_th = float(getattr(getattr(cfg, 'debug', object()), 'audit_cov_threshold', 0.5))
+except Exception:
+	audit_batches, cov_th = 50, 0.5
+
+if audit_batches > 0:
+	print(
+		f'[AUDIT] running audit on {audit_batches} batches (coverage threshold={cov_th})'
+	)
+	audit_offsets_and_mask_coverage(
+		train_loader, cfg.loss.fb_seg, max_batches=audit_batches, cov_threshold=cov_th
+	)
+	# Optionally also audit the validation loader:
+	# audit_offsets_and_mask_coverage(val_loader, cfg.loss.fb_seg, max_batches=min(20, audit_batches), cov_threshold=cov_th)
+print('[AUDIT] done.')
 
 synthe_noise_segy = (
 	'/home/dcuser/data/Synthetic/marmousi/shot801_decimate_fieldnoise008.sgy'

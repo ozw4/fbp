@@ -9,7 +9,7 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'caformer_b36.sail_in22k_ft_in1k_finetune_augspace01'
+suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -111,3 +111,13 @@ loss:
     smooth_weight: inv      # inv | exp
     smooth_scale: 1.0       # inv: denominator epsilon; exp: inverse temperature
     smooth2_lambda: 0   # curvature penalty weight; 0.0 keeps current behavior
+    use_vel_mask: true
+    vmin_mask: 500.0     # m/s
+    vmax_mask: 6500.0    # m/s
+    t0_lo_ms: -50.0      # ms
+    t0_hi_ms: 80.0       # ms
+    taper_ms: 10.0       # ms
+
+debug:
+  audit_batches: 50          # 0 disables the audit
+  audit_cov_threshold: 0.5   # coverage threshold to flag low-coverage valid traces
