@@ -74,10 +74,10 @@ def robust_linear_trend_sections(
 	sort_offsets: bool = True,  # 回帰/差分計算は昇順で
 	use_taper: bool = True,  # 窓合成時に Hann テーパー
 ):
-        """確信度で前重みを掛けたセクション回帰。t(x) ≈ a + s x を IRLS で推定。
-        返り値: (trend_t, trend_s, v_trend, w_conf, covered) いずれも (B,H)
-        covered はその trace が少なくとも 1 つの窓で回帰に寄与したかどうか。
-        """
+	"""確信度で前重みを掛けたセクション回帰。t(x) ≈ a + s x を IRLS で推定。
+	返り値: (trend_t, trend_s, v_trend, w_conf, covered) いずれも (B,H)
+	covered はその trace が少なくとも 1 つの窓で回帰に寄与したかどうか。
+	"""
 	B, H = offsets.shape
 	x0 = offsets
 	y0 = t_sec
@@ -178,7 +178,7 @@ def robust_linear_trend_sections(
 	trend_t = trend_t / counts.clamp_min(1e-6)
 	trend_s = trend_s / counts.clamp_min(1e-6)
 	v_trend = 1.0 / trend_s.clamp_min(1e-6)
-        covered = (counts > 0)
+	covered = counts > 0
 
 	# 元順に戻す
 	if sort_offsets:
@@ -186,7 +186,7 @@ def robust_linear_trend_sections(
 		trend_s = torch.gather(trend_s, 1, inv)
 		v_trend = torch.gather(v_trend, 1, inv)
 		w_conf = torch.gather(w_conf, 1, inv)
-                covered = torch.gather(covered.to(torch.bool), 1, inv)
+		covered = torch.gather(covered.to(torch.bool), 1, inv)
 
 	return trend_t, trend_s, v_trend, w_conf, covered
 
@@ -197,7 +197,7 @@ def gaussian_prior_from_trend(
 	W: int,
 	sigma_ms: float,
 	ref_tensor: torch.Tensor,
-        covered_mask: torch.Tensor | None = None,  # (B,H) optional: 未カバーは一様に
+	covered_mask: torch.Tensor | None = None,  # (B,H) optional: 未カバーは一様に
 ):
 	"""Make a per-trace Gaussian prior in time around t_trend.
 
@@ -213,14 +213,14 @@ def gaussian_prior_from_trend(
 	mu = t_trend_sec.to(ref_tensor).unsqueeze(-1)  # (B,H,1)
 	sigma = max(sigma_ms * 1e-3, 1e-6)
 	logp = -0.5 * ((t * dt - mu) / sigma) ** 2  # (B,H,W)
-        prior = torch.softmax(logp, dim=-1)  # (B,H,W)
+	prior = torch.softmax(logp, dim=-1)  # (B,H,W)
 
-        # 回帰窓に1度も入っていない trace は一様分布で無害化
-        if covered_mask is not None:
-                uni = prior.new_full((1, 1, W), 1.0 / W)
-                prior = torch.where(covered_mask.to(torch.bool).unsqueeze(-1), prior, uni)
+	# 回帰窓に1度も入っていない trace は一様分布で無害化
+	if covered_mask is not None:
+		uni = prior.new_full((1, 1, W), 1.0 / W)
+		prior = torch.where(covered_mask.to(torch.bool).unsqueeze(-1), prior, uni)
 
-        return prior
+	return prior
 
 
 def shift_robust_l2_pertrace_vec(
@@ -510,7 +510,6 @@ def make_fb_seg_criterion(cfg_fb):
 				pos_sec = pos * dt
 				with torch.no_grad():
 					t_tr, s_tr, v_tr, w_conf, covered = robust_linear_trend_sections(
-
 						offsets=offsets.to(pos_sec),
 						t_sec=pos_sec,
 						valid=(fb_idx >= 0),
@@ -529,7 +528,7 @@ def make_fb_seg_criterion(cfg_fb):
 						W=logit.size(-1),
 						sigma_ms=float(getattr(cfg_fb, 'prior_sigma_ms', 20.0)),
 						ref_tensor=logit,
-                                                covered_mask=covered,
+						covered_mask=covered,
 					)
 					log_prior = torch.log(
 						prior.clamp_min(
@@ -571,8 +570,8 @@ def make_fb_seg_criterion(cfg_fb):
 					'smooth': base.new_tensor(0.0),
 					'curv': base.new_tensor(0.0),
 					'prior': base_prior.detach(),
-                                        # 監視用: trend prior が何割の trace に効いているか
-                                        'prior_cov': covered.float().mean().detach()
+					# 監視用: trend prior が何割の trace に効いているか
+					'prior_cov': covered.float().mean().detach(),
 				}
 
 			W = prob.size(-1)
@@ -634,8 +633,8 @@ def make_fb_seg_criterion(cfg_fb):
 				'smooth': (smooth_lambda * smooth).detach(),
 				'curv': (smooth2_lambda * loss_curv).detach(),
 				'prior': base_prior.detach(),
-                                        # 監視用: trend prior が何割の trace に効いているか
-                                        'prior_cov': covered.float().mean().detach()
+				# 監視用: trend prior が何割の trace に効いているか
+				'prior_cov': covered.float().mean().detach(),
 			}
 
 		return _criterion

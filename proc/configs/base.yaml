@@ -122,8 +122,8 @@ loss:
     # --- trend-based prior ---
     use_trend_prior: true      # まず有効化して挙動確認
     prior_mode: logit          # 'logit' | 'kl'
-    prior_alpha: 0.05          # priorの強さ
-    prior_sigma_ms: 20.0       # ガウスpriorの標準偏差 [ms]
+    prior_alpha: 0.1         # priorの強さ
+    prior_sigma_ms: 50.0       # ガウスpriorの標準偏差 [ms]
     trend_section: 128         # セクション長
     trend_stride: 64           # セクション間ストライド
     trend_huber_c: 1.345       # Huber閾値

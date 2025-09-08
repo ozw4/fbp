@@ -102,12 +102,12 @@ def debug_prior_visual(
 				sec_dir.mkdir(parents=True, exist_ok=True)
 
 				# ---- ロバスト回帰（このアイテムのみ）----
-				t_tr, s_tr, v_tr, _wconf, covered = robust_linear_trend_sections(
-					offsets=offsets[b : b + 1],  # (1,H)
-					t_sec=pos_sec[b : b + 1],  # (1,H)
-					valid=valid[b : b + 1],  # (1,H)
-					prob=prob[b : b + 1],  # (1,H,W) ← 修正ポイント
-					dt_sec=dt_sec[b : b + 1],  # (1,1)
+				t_tr, s_tr, v_tr, w_conf, covered = robust_linear_trend_sections(
+					offsets=offsets[b : b + 1],
+					t_sec=pos_sec[b : b + 1],
+					valid=valid[b : b + 1],
+					prob=prob[b : b + 1],  # ← prob を渡す
+					dt_sec=dt_sec[b : b + 1],  # ← dt を渡す
 					section_len=section_len,
 					stride=stride,
 					huber_c=huber_c,
@@ -123,7 +123,7 @@ def debug_prior_visual(
 					W=W,
 					sigma_ms=prior_sigma_ms,
 					ref_tensor=logits[b : b + 1],
-                                        covered_mask=covered,
+					covered_mask=covered,  # ← 追加
 				)  # (1,H,W)
 
 				# ---- 数値診断 ----
@@ -136,14 +136,13 @@ def debug_prior_visual(
 					p99_ms = float(res_ms.quantile(0.99))
 				else:
 					med_ms = p95_ms = p99_ms = float('nan')
-
+				covered = covered.to(fb_idx.device)
 				log_p = torch.log_softmax(logit[b : b + 1] / tau, dim=-1)  # (1,H,W)
 				ce_bh = -(prior * log_p).sum(dim=-1)  # (1,H)
-				ce = (
-					float(ce_bh[valid[b : b + 1]].mean().cpu())
-					if valid[b].any()
-					else float('nan')
-				)
+
+				cov = covered[0]  # (H,)
+				use = (fb_idx[b] >= 0) & cov  # ← デバイス一致済み
+				ce = float(ce_bh[0, use].mean().cpu()) if use.any() else float('nan')
 
 				print(
 					f'[prior dbg] sec={section_counter:05d} (batch={batch_idx}, item={b}) '
@@ -226,7 +225,10 @@ def debug_prior_visual(
 				# pos_sec は有効だけ散布
 				ax2.plot(x_plot[valid_plot], pos_plot[valid_plot], '.', label='pos_sec')
 				# trend_t は NaN で分断された線として描く
-				ax2.plot(x_plot, tt_plot_masked, '-', label='trend_t (fit)')
+				cov = covered[0].cpu().numpy().astype(bool)
+				tt_plot = t_tr[0].cpu().numpy()
+				tt_plot[~cov] = float('nan')
+				ax2.plot(offsets[b].cpu().numpy(), tt_plot, '-', label='trend_t (fit)')
 				ax2.set_xlabel('offset [m]')
 				ax2.set_ylabel('time [s]')
 				ax2.legend(loc='best')
