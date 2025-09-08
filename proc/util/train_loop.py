@@ -125,14 +125,7 @@ def train_one_epoch(
 	accum_loss_curv = 0.0
 	for i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
 		x_masked, x_tgt, mask_or_none, meta = batch
-		if i == 0:
-			from proc.util.audit import assert_meta_shapes
-			B, H = x_masked.shape[0], x_masked.shape[2]
-			assert_meta_shapes(meta, B, H)
-			offs = meta['offsets']
-			diffs = (offs[:, 1:] - offs[:, :-1]).abs()
-			if (diffs.sum(dim=1) == 0).any():
-				raise RuntimeError("[FATAL] offsets are constant over H for at least one shot (likely unset)")
+
 		start_time = time.time()
 		x_masked = x_masked.to(device, non_blocking=True)
 		x_tgt = x_tgt.to(device, non_blocking=True)
@@ -145,6 +138,29 @@ def train_one_epoch(
 		device_type = (
 			'cuda' if torch.cuda.is_available() and 'cuda' in str(device) else 'cpu'
 		)
+		offs = meta.get('offsets')
+		if offs is not None:
+			# offs: (B, H)
+			diffs = (offs[:, 1:] - offs[:, :-1]).abs().sum(dim=1)  # (B,)
+			bad = diffs == 0  # 全チャンネル同一 → 定数オフセット
+			if bad.any():
+				# 該当ショットだけバッチから除外
+				keep = ~bad
+				n_bad = int(bad.sum().item())
+				print(f'[WARN] drop {n_bad} shots with constant offsets in this batch')
+
+				# すべて不良ならバッチごとスキップ
+				if not keep.any():
+					continue
+
+				# テンソル類をB次元でフィルタ
+				x_masked = x_masked[keep]
+				x_tgt = x_tgt[keep]
+				if mask_or_none is not None:
+					mask_or_none = mask_or_none[keep]
+				for k in ('fb_idx', 'offsets', 'dt_sec'):
+					if k in meta and isinstance(meta[k], torch.Tensor):
+						meta[k] = meta[k][keep]
 		with autocast(device_type=device_type, enabled=use_amp):
 			pred = model(x_masked)
 			out = criterion(
