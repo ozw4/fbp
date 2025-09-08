@@ -306,8 +306,8 @@ if cfg.distributed:
 
 transfer_loaded = False
 if cfg.resume:
-	transfer_loaded = True
-	checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
+        transfer_loaded = True
+        checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
 
 	# 1) モデル重みを読み込む（必要ならヘッドを除外）
 	if getattr(cfg, 'resume_exclude_head', False):
@@ -335,8 +335,12 @@ if cfg.resume:
 			print(
 				f'[resume] skip optimizer/scheduler: {e} -> reinit and restart from epoch 0'
 			)
-	else:
-		print('[resume] loaded model weights only (optimizer/scheduler reinitialized)')
+        else:
+                print('[resume] loaded model weights only (optimizer/scheduler reinitialized)')
+
+if getattr(cfg.model, "use_offset_input", False):
+        from proc.util.model_utils import inflate_input_convs_to_2ch
+        inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode="duplicate")
 
 # 3) 段階解凍のガード用フラグ
 model._transfer_loaded = transfer_loaded
@@ -373,16 +377,17 @@ for epoch in range(cfg.start_epoch, epochs):
 		criterion=criterion,
 		optimizer=optimizer,
 		lr_scheduler=lr_scheduler,
-		dataloader=train_loader,
-		device=device,
-		epoch=epoch,
-		print_freq=cfg.print_freq,
-		writer=train_writer,
-		use_amp=use_amp,
-		scaler=scaler,
-		ema=ema,
-		gradient_accumulation_steps=1,
-		step=step,
+                dataloader=train_loader,
+                device=device,
+                epoch=epoch,
+                print_freq=cfg.print_freq,
+                writer=train_writer,
+                use_offset_input=getattr(cfg.model, 'use_offset_input', False),
+                use_amp=use_amp,
+                scaler=scaler,
+                ema=ema,
+                gradient_accumulation_steps=1,
+                step=step,
 		freeze_epochs=cfg.freeze_epochs,
 		unfreeze_steps=cfg.unfreeze_steps,
 	)
