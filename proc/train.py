@@ -27,9 +27,7 @@ from proc.util.eval import eval_synthe, val_one_epoch_snr
 from proc.util.loss import make_criterion, make_fb_seg_criterion
 from proc.util.model import NetAE, adjust_first_conv_padding
 from proc.util.model_utils import (
-	freeze_original_in_channels,
 	inflate_input_convs_to_2ch,
-	unfreeze_all_inflated_convs,
 )
 from proc.util.predict import cover_all_traces_predict_chunked
 from proc.util.rng_util import worker_init_fn
@@ -349,7 +347,6 @@ if getattr(cfg.model, 'use_offset_input', False):
 	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='zero')
 	if cfg.freeze_epochs > 0:
 		print(f'Freezing original in-ch for {cfg.freeze_epochs} epochs')
-		freeze_original_in_channels(model, old_in_ch=1)
 
 # 3) 段階解凍のガード用フラグ
 model._transfer_loaded = transfer_loaded
@@ -380,8 +377,7 @@ step = checkpoint.get('step', 0) if cfg.resume else 0
 for epoch in range(cfg.start_epoch, epochs):
 	if cfg.distributed:
 		train_sampler.set_epoch(epoch)
-	if epoch + 1 == cfg.freeze_epochs:  # freeze_epochs 終了時に解除
-		unfreeze_all_inflated_convs(model)
+
 	step = train_one_epoch(
 		model=model,
 		criterion=criterion,

@@ -9,7 +9,7 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_inpoffs'
+suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_inpoffs_nofreeze'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -48,7 +48,7 @@ resume:   /workspace/proc/result/recon/train_field_list_edgenext_small/checkpoin
 start_epoch: 0
 
 # Freeze schedule
-freeze_epochs: 2
+freeze_epochs: 0
 unfreeze_steps: 2
 resume_exclude_head: true  # skip loading head weights when resuming
 resume_exclude_prefixes:
