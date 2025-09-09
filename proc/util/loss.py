@@ -1,5 +1,7 @@
 # %%
 
+# %%
+
 import math
 import time
 
@@ -11,21 +13,20 @@ from proc.util.velocity_mask import make_velocity_feasible_mask
 
 @torch.no_grad()
 def trace_confidence_from_prob(
-	prob: torch.Tensor,  # (B,H,W) softmax 後
+	prob: torch.Tensor,  # (B,H,W) after softmax
 	dt_sec: torch.Tensor,  # (B,1) or (B,)
 	method: str = 'var',  # "var" | "entropy" | "var+ent"
-	sigma_ms_ref: float = 20.0,  # 分散基準（ms）
-	floor: float = 0.2,  # 最小重み（自己強化抑制）
-	power: float = 0.5,  # 0.5=√で弱める
+	sigma_ms_ref: float = 20.0,  # variance reference (ms)
+	floor: float = 0.2,  # min weight to avoid self-reinforcement
+	power: float = 0.5,  # soften (0.5 = sqrt)
 	eps: float = 1e-9,
 ) -> torch.Tensor:
-	"""確率分布 p(t) から (B,H) の確信度重みを作る（停止勾配）。"""
+	"""Build per-trace confidence weights (B,H) from probability p(t); no grad."""
 	B, H, W = prob.shape
 	t_idx = torch.arange(W, device=prob.device, dtype=prob.dtype).view(1, 1, W)
 	dt = dt_sec.to(prob).view(B, 1, 1)
 	t = t_idx * dt  # (B,1,W) [s]
 
-	# 時間平均・分散
 	mu = (prob * t).sum(dim=-1)  # (B,H)
 	var = (prob * (t - mu.unsqueeze(-1)) ** 2).sum(dim=-1)  # (B,H)
 	var = var.clamp_min(eps)
@@ -33,31 +34,30 @@ def trace_confidence_from_prob(
 	w_var = None
 	if method in ('var', 'var+ent'):
 		sigma_ref = max(sigma_ms_ref * 1e-3, 1e-6)
-		w_var = torch.exp(-var / (2 * sigma_ref**2))  # 小さい分散ほど重く
+		w_var = torch.exp(-var / (2 * sigma_ref**2))
 
 	if method == 'var':
 		w = w_var
 	elif method == 'entropy':
-		Hlog = -(prob.clamp_min(eps) * prob.clamp_min(eps).log()).sum(dim=-1)  # (B,H)
+		Hlog = -(prob.clamp_min(eps) * prob.clamp_min(eps).log()).sum(dim=-1)
 		Hnorm = Hlog / math.log(W)
 		w = (1.0 - Hnorm).clamp(0.0, 1.0)
-	else:  # "var+ent" 幾何平均を弱めに
+	else:  # "var+ent"
 		Hlog = -(prob.clamp_min(eps) * prob.clamp_min(eps).log()).sum(dim=-1)
 		Hnorm = Hlog / math.log(W)
 		w_ent = (1.0 - Hnorm).clamp(0.0, 1.0)
 		w = (w_var * w_ent).sqrt()
 
-	# 床＋弱め
 	return w.clamp_min(floor) ** power
 
 
 @torch.no_grad()
 def robust_linear_trend_sections(
 	offsets: torch.Tensor,  # (B,H) [m]
-	t_sec: torch.Tensor,  # (B,H) 予測 pos_sec [s]
+	t_sec: torch.Tensor,  # (B,H) predicted pos_sec [s]
 	valid: torch.Tensor,  # (B,H) fb_idx>=0
 	*,
-	prob: torch.Tensor,  # (B,H,W) softmax 後
+	prob: torch.Tensor,  # (B,H,W) after softmax
 	dt_sec: torch.Tensor,  # (B,1) or (B,)
 	section_len: int = 128,
 	stride: int = 64,
@@ -65,25 +65,24 @@ def robust_linear_trend_sections(
 	iters: int = 3,
 	vmin: float = 300.0,
 	vmax: float = 6000.0,
-	# 確信度の作り方
+	# confidence construction
 	conf_method: str = 'var',  # "var" | "entropy" | "var+ent"
 	conf_sigma_ms: float = 20.0,
 	conf_floor: float = 0.2,
 	conf_power: float = 0.5,
-	# 並べ替えとブレンド
-	sort_offsets: bool = True,  # 回帰/差分計算は昇順で
-	use_taper: bool = True,  # 窓合成時に Hann テーパー
+	# sorting & blending
+	sort_offsets: bool = True,
+	use_taper: bool = True,
 ):
-	"""確信度で前重みを掛けたセクション回帰。t(x) ≈ a + s x を IRLS で推定。
-	返り値: (trend_t, trend_s, v_trend, w_conf, covered) いずれも (B,H)
-	covered はその trace が少なくとも 1 つの窓で回帰に寄与したかどうか。
+	"""Windowed IRLS (weighted by confidence) to fit t(x) ≈ a + s x.
+	Returns: (trend_t, trend_s, v_trend, w_conf, covered) all (B,H)
 	"""
 	B, H = offsets.shape
 	x0 = offsets
 	y0 = t_sec
 	v0 = (valid > 0).to(t_sec)
 
-	# 1) 確信度 (B,H)
+	# 1) per-trace confidence (B,H)
 	w_conf = (
 		trace_confidence_from_prob(
 			prob=prob,
@@ -97,7 +96,7 @@ def robust_linear_trend_sections(
 		.to(t_sec)
 	)
 
-	# 2) 必要ならオフセット昇順に並べ替え（内部計算だけ）
+	# 2) optional sort by offsets (internal only)
 	if sort_offsets:
 		idx = torch.argsort(x0, dim=1)
 		arangeH = torch.arange(H, device=idx.device).unsqueeze(0).expand_as(idx)
@@ -125,9 +124,9 @@ def robust_linear_trend_sections(
 		xs = x[:, start:end]  # (B,L)
 		ys = y[:, start:end]
 		vs = v[:, start:end]
-		pws = pw[:, start:end]  # (B,L) 確信度
+		pws = pw[:, start:end]  # (B,L)
 
-		# 初期重み：有効 × 確信度
+		# init weights: valid × confidence
 		w = (vs * pws).clone()
 
 		a = torch.zeros(B, 1, dtype=y.dtype, device=y.device)
@@ -155,13 +154,13 @@ def robust_linear_trend_sections(
 			w_huber = torch.where(
 				r.abs() <= 1.0, vs, vs * (1.0 / r.abs()).clamp_max(10.0)
 			)
-			# 確信度は常に前掛け（停止勾配）
+			# keep confidence as front weights (stop-grad)
 			w = w_huber * pws
 
-		# 物理レンジでクランプ
+		# clamp to physical range
 		s_sec = b.squeeze(1).clamp(min=1.0 / vmax, max=1.0 / vmin)  # (B,)
 
-		# ブレンド重み：Hann×有効×確信度（境界を滑らかに）
+		# Hann taper for window blending
 		if use_taper:
 			wwin = torch.hann_window(
 				L, periodic=False, device=y.device, dtype=y.dtype
@@ -180,7 +179,6 @@ def robust_linear_trend_sections(
 	v_trend = 1.0 / trend_s.clamp_min(1e-6)
 	covered = counts > 0
 
-	# 元順に戻す
 	if sort_offsets:
 		trend_t = torch.gather(trend_t, 1, inv)
 		trend_s = torch.gather(trend_s, 1, inv)
@@ -197,12 +195,9 @@ def gaussian_prior_from_trend(
 	W: int,
 	sigma_ms: float,
 	ref_tensor: torch.Tensor,
-	covered_mask: torch.Tensor | None = None,  # (B,H) optional: 未カバーは一様に
+	covered_mask: torch.Tensor | None = None,  # (B,H)
 ):
-	"""Make a per-trace Gaussian prior in time around t_trend.
-
-	Returns: prior probabilities of shape (B,H,W), each trace sums to 1.
-	"""
+	"""Make per-trace Gaussian prior in time around t_trend. Returns (B,H,W) and sums to 1 per trace."""
 	B, H = t_trend_sec.shape
 	t = torch.arange(W, device=ref_tensor.device, dtype=ref_tensor.dtype).view(1, 1, W)
 	if dt_sec.dim() == 1:
@@ -215,7 +210,6 @@ def gaussian_prior_from_trend(
 	logp = -0.5 * ((t * dt - mu) / sigma) ** 2  # (B,H,W)
 	prior = torch.softmax(logp, dim=-1)  # (B,H,W)
 
-	# 回帰窓に1度も入っていない trace は一様分布で無害化
 	if covered_mask is not None:
 		uni = prior.new_full((1, 1, W), 1.0 / W)
 		prior = torch.where(covered_mask.to(torch.bool).unsqueeze(-1), prior, uni)
@@ -238,12 +232,10 @@ def shift_robust_l2_pertrace_vec(
 	if S < 0:
 		raise ValueError('max_shift must be >= 0')
 	if W - S <= 0:
-		raise ValueError(
-			f'max_shift={S} is too large for width W={W} (need W > max_shift).'
-		)
+		raise ValueError(f'max_shift={S} is too large for W={W} (need W > max_shift).')
 
-	K = 2 * S + 1  # number of shifts
-	minW = W - S  # common length across shifts
+	K = 2 * S + 1
+	minW = W - S
 
 	s_offsets = torch.arange(-S, S + 1, device=device)  # (K,)
 	start_pred = torch.clamp(s_offsets, min=0)  # (K,)
@@ -253,11 +245,11 @@ def shift_robust_l2_pertrace_vec(
 	idx_pred = start_pred[:, None] + base_idx[None, :]  # (K, minW)
 	idx_gt = start_gt[:, None] + base_idx[None, :]  # (K, minW)
 
-	idxp = idx_pred.view(K, 1, 1, 1, minW).expand(-1, B, C, H, -1)  # (K,B,C,H,minW)
+	idxp = idx_pred.view(K, 1, 1, 1, minW).expand(-1, B, C, H, -1)
 	idxg = idx_gt.view(K, 1, 1, 1, minW).expand(-1, B, C, H, -1)
 
-	pred_expanded = pred.unsqueeze(0).expand(K, -1, -1, -1, -1)  # (K,B,C,H,W)
-	gt_expanded = gt.unsqueeze(0).expand(K, -1, -1, -1, -1)  # (K,B,C,H,W)
+	pred_expanded = pred.unsqueeze(0).expand(K, -1, -1, -1, -1)
+	gt_expanded = gt.unsqueeze(0).expand(K, -1, -1, -1, -1)
 
 	pred_g = pred_expanded.gather(dim=-1, index=idxp)  # (K,B,C,H,minW)
 	gt_g = gt_expanded.gather(dim=-1, index=idxg)  # (K,B,C,H,minW)
@@ -267,24 +259,24 @@ def shift_robust_l2_pertrace_vec(
 			mask = mask.view(B, 1, H, W)
 		mask = mask.to(dtype=dtype)
 		if mask.size(1) == 1:
-			mask_expanded = mask.unsqueeze(0).expand(K, -1, -1, -1, -1)  # (K,B,1,H,W)
+			mask_expanded = mask.unsqueeze(0).expand(K, -1, -1, -1, -1)
 			idxm = idxg[:, :, :1, :, :]
 		elif mask.size(1) == C:
-			mask_expanded = mask.unsqueeze(0).expand(K, -1, -1, -1, -1)  # (K,B,C,H,W)
+			mask_expanded = mask.unsqueeze(0).expand(K, -1, -1, -1, -1)
 			idxm = idxg
 		else:
 			raise ValueError('mask channel dimension must be 1 or match C.')
-		mask_g = mask_expanded.gather(dim=-1, index=idxm)  # (K,B,1orC,H,minW)
+		mask_g = mask_expanded.gather(dim=-1, index=idxm)
 	else:
 		mask_g = None
 
-	diff2 = (pred_g - gt_g) ** 2  # (K,B,C,H,minW)
+	diff2 = (pred_g - gt_g) ** 2
 	if mask_g is not None:
 		num = (diff2 * mask_g).sum(dim=(2, 4))  # (K,B,H)
 		den = mask_g.sum(dim=(2, 4)).clamp_min(1e-8)  # (K,B,H)
-		loss_kbh = num / den  # (K,B,H)
+		loss_kbh = num / den
 	else:
-		loss_kbh = diff2.mean(dim=(2, 4))  # (K,B,H)
+		loss_kbh = diff2.mean(dim=(2, 4))
 
 	best_bh = loss_kbh.min(dim=0).values  # (B,H)
 
@@ -295,7 +287,6 @@ def shift_robust_l2_pertrace_vec(
 	return best_bh.mean()
 
 
-# Reuse the earlier loop reference and tests
 def shift_robust_l2_pertrace_loop(pred, gt, mask=None, max_shift=6, reduction='mean'):
 	assert pred.shape == gt.shape
 	B, C, H, W = pred.shape
@@ -321,12 +312,12 @@ def shift_robust_l2_pertrace_loop(pred, gt, mask=None, max_shift=6, reduction='m
 		pd, gd = pred[..., ps], gt[..., gs]
 		if mask is not None:
 			md = mask[..., gs] if s >= 0 else mask[..., ps]
-			diff2 = (pd - gd) ** 2  # (B,C,H,W')
+			diff2 = (pd - gd) ** 2
 			num = (diff2 * md).sum(dim=(1, 3))  # (B,H)
-			den = md.sum(dim=(1, 3)).clamp_min(1e-8)  # (B,H)
-			loss_bh = num / den  # (B,H)
+			den = md.sum(dim=(1, 3)).clamp_min(1e-8)
+			loss_bh = num / den
 		else:
-			loss_bh = ((pd - gd) ** 2).mean(dim=(1, 3))  # (B,H)
+			loss_bh = ((pd - gd) ** 2).mean(dim=(1, 3))
 
 		best = torch.minimum(best, loss_bh)
 
@@ -343,19 +334,13 @@ def compute_loss(
 	mask: torch.Tensor | None = None,
 	cfg_loss=None,
 ):
-	"""Compute training loss.
-
-	Uses standard MSE by default, and switches to shift-robust MSE when
-	``cfg_loss.shift_robust`` is True. The existing implementation
-	``shift_robust_l2_pertrace_vec`` is reused for the robust variant.
-	"""
+	"""Standard MSE or shift-robust MSE depending on cfg."""
 	shift_robust = bool(getattr(cfg_loss, 'shift_robust', False))
 	max_shift = int(getattr(cfg_loss, 'max_shift', 5))
 	if shift_robust:
 		return shift_robust_l2_pertrace_vec(
 			pred, target, mask=mask, max_shift=max_shift, reduction='mean'
 		)
-	# standard masked/unmasked MSE
 	if mask is not None:
 		if mask.dim() != 4:
 			mask = mask.view(pred.size(0), 1, pred.size(2), pred.size(3))
@@ -368,7 +353,7 @@ def compute_loss(
 
 
 def make_criterion(cfg_loss):
-	"""Return a criterion compatible with ``train_one_epoch``."""
+	"""Return a criterion compatible with train_one_epoch."""
 
 	def _criterion(pred, target, *, mask=None, **kwargs):
 		return compute_loss(pred, target, mask=mask, cfg_loss=cfg_loss)
@@ -383,23 +368,7 @@ def fb_seg_kl_loss(
 	tau: float = 1.0,
 	eps: float = 0.0,
 ):
-	"""KL-divergence loss for first-break segmentation.
-
-	Parameters
-	----------
-	logits : torch.Tensor
-			Raw model outputs of shape ``(B,1,H,W)``.
-	target : torch.Tensor
-			Target probabilities (Gaussian-like) of shape ``(B,1,H,W)``.
-	valid_mask : torch.Tensor | None
-			Optional mask indicating valid traces. Expected shape ``(B,H)``
-			or ``(B,1,H,1)``. Invalid traces are ignored in the loss.
-	tau : float
-			Softmax temperature.
-	eps : float
-			Label smoothing factor.
-
-	"""
+	"""KL-divergence loss for first-break segmentation."""
 	log_p = F.log_softmax(logits.squeeze(1) / tau, dim=-1)  # (B,H,W)
 	q = target.squeeze(1)
 	q = q / (q.sum(dim=-1, keepdim=True) + 1e-12)
@@ -419,12 +388,7 @@ def fb_seg_kl_loss(
 
 
 def make_fb_seg_criterion(cfg_fb):
-	"""Factory for fb segmentation loss.
-
-	``cfg_fb.type`` selects between KL-divergence (``'kl'``) and MSE
-	(``'mse'``). Additional parameters ``tau`` and ``eps`` configure the
-	KL variant.
-	"""
+	"""Factory for fb segmentation loss with safe velocity mask & trend prior."""
 	fb_type = str(getattr(cfg_fb, 'type', 'kl')).lower()
 	if fb_type == 'kl':
 		tau = float(getattr(cfg_fb, 'tau', 1.0))
@@ -446,10 +410,12 @@ def make_fb_seg_criterion(cfg_fb):
 		) -> torch.Tensor | tuple[torch.Tensor, dict]:
 			valid_mask = (fb_idx >= 0).to(pred.dtype)
 			logit_clip = float(getattr(cfg_fb, 'logit_clip', 30.0))
-			# --- build masked logits by applying a velocity cone prior ---
+
+			# --- base logits (B,H,W) ------------------------------------------
 			logit_raw = pred.squeeze(1)  # (B,H,W)
 			B, H, W = logit_raw.shape
 
+			# --- optional velocity-feasible mask as log-add -------------------
 			use_vel_mask = bool(getattr(cfg_fb, 'use_vel_mask', False))
 			if use_vel_mask and (offsets is not None) and (dt_sec is not None):
 				velmask = make_velocity_feasible_mask(
@@ -465,64 +431,60 @@ def make_fb_seg_criterion(cfg_fb):
 					dtype=pred.dtype,
 				)
 
-				# ---- SAFE log(mask): fp32で計算 + fp16安全なepsilon + 全ゼロ対策 ----
+				# SAFE log(mask) in fp32 with strict sanitization
 				with torch.no_grad():
 					vm32 = velmask.detach().to(torch.float32)  # (B,H,W)
-					# ensure finite in [0,1]
 					vm32 = torch.nan_to_num(
 						vm32, nan=0.0, posinf=0.0, neginf=0.0
 					).clamp_(0.0, 1.0)
-					# 全ゼロ・トレースを検出
-					has_any = vm32.sum(dim=-1, keepdim=True) > 0  # (B,H,1) bool
-					# 全ゼロのトレースは「マスク無効（=全1）」に差し替え
+					has_any = vm32.sum(dim=-1, keepdim=True) > 0  # (B,H,1)
 					vm32 = torch.where(has_any, vm32, torch.ones_like(vm32))
 
-					vel_log_eps = float(
-						getattr(cfg_fb, 'vel_log_eps', 1e-4)
-					)  # ★ fp16安全
-					neg_large = float(
-						getattr(cfg_fb, 'vel_log_neg', -80.0)
-					)  # ★ ゼロには一定の大負値
+					vel_log_eps = float(getattr(cfg_fb, 'vel_log_eps', 1e-4))
+					neg_large = float(getattr(cfg_fb, 'vel_log_neg', -80.0))
 					logmask32 = torch.where(
 						vm32 > 0.0,
 						torch.log(vm32.clamp_min(vel_log_eps)),
 						torch.full_like(vm32, neg_large),
 					)
 
-				# logits + log(mask)（元dtypeへ）
-				logit = logit_raw + logmask32.to(logit_raw.dtype)
+				# add in fp32, then sanitize & clip
+				logit = (logit_raw.to(torch.float32) + logmask32).to(logit_raw.dtype)
 			else:
 				logit = logit_raw
-				# ---- Clip logits to avoid exp overflow in softmax ----
 
-				logit = logit.clamp(-logit_clip, logit_clip)
-				# ---- NaN guard on logits ----
-				if not torch.isfinite(logit).all():
-					bad = (~torch.isfinite(logit)).sum().item()
-					raise FloatingPointError(
-						f'[NaNGuard] logit has {bad} non-finite elements'
-					)
+			# sanitize & clip logits BEFORE any prior
+			logit = torch.nan_to_num(
+				logit, nan=0.0, posinf=logit_clip, neginf=-logit_clip
+			).clamp_(-logit_clip, logit_clip)
 
-			# --- optional trend-based prior --------------------------------------
+			# --- optional trend-based prior ----------------------------------
 			prior_mode = str(getattr(cfg_fb, 'prior_mode', 'logit')).lower()
 			prior_alpha = float(getattr(cfg_fb, 'prior_alpha', 0.1))
 			prior_ce = logit.new_tensor(0.0)
-			covered = (fb_idx >= 0) & False
+			covered = torch.zeros(B, H, dtype=torch.bool, device=logit.device)
+
 			use_trend_prior = bool(getattr(cfg_fb, 'use_trend_prior', False))
-			if (
+			have_prior = (
 				use_trend_prior
 				and (offsets is not None)
 				and (dt_sec is not None)
-				and prior_alpha > 0
-			):
+				and (prior_alpha > 0)
+			)
+
+			log_prior = None
+			prior = None
+
+			if have_prior:
 				prob_for_trend = torch.softmax(logit / tau, dim=-1)
 				if not torch.isfinite(prob_for_trend).all():
 					raise FloatingPointError('[NaNGuard] prob_for_trend non-finite')
+
 				t_idx = torch.arange(W, device=logit.device, dtype=prob_for_trend.dtype)
-				pos = (prob_for_trend * t_idx).sum(dim=-1)
-				dt = dt_sec.to(pos.device, pos.dtype)
-				dt = dt.view(dt.size(0), 1)
+				pos = (prob_for_trend * t_idx).sum(dim=-1)  # (B,H)
+				dt = dt_sec.to(pos.device, pos.dtype).view(pos.size(0), 1)
 				pos_sec = pos * dt
+
 				with torch.no_grad():
 					t_tr, s_tr, v_tr, w_conf, covered = robust_linear_trend_sections(
 						offsets=offsets.to(pos_sec),
@@ -537,53 +499,108 @@ def make_fb_seg_criterion(cfg_fb):
 						prob=prob_for_trend,
 						dt_sec=dt_sec,
 					)
+
 				prior = gaussian_prior_from_trend(
 					t_trend_sec=t_tr,
 					dt_sec=dt_sec,
-					W=logit.size(-1),
+					W=W,
 					sigma_ms=float(getattr(cfg_fb, 'prior_sigma_ms', 20.0)),
 					ref_tensor=logit,
 					covered_mask=covered,
 				)
+
 				# normalize & safe log in fp32
 				prior = torch.nan_to_num(prior, nan=0.0).clamp_(min=0.0)
 				prior = prior / prior.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+
 				prior_log_eps = float(getattr(cfg_fb, 'prior_log_eps', 1e-4))
 				log_prior = torch.log(prior.clamp_min(prior_log_eps)).to(torch.float32)
-				eps = 1e-9
-				H = -(
-					prob_for_trend.clamp_min(eps) * prob_for_trend.clamp_min(eps).log()
+
+				# simple confidence gate (median over valid traces)
+				epsH = 1e-9
+				Hent = -(
+					prob_for_trend.clamp_min(epsH)
+					* prob_for_trend.clamp_min(epsH).log()
 				).sum(dim=-1)
-				Hnorm = H / math.log(prob_for_trend.size(-1))
-				conf = 1.0 - Hnorm  # 大きいほど自信あり
+				Hnorm = Hent / math.log(prob_for_trend.size(-1))
+				conf = 1.0 - Hnorm
 				conf_med = (
 					conf[(fb_idx >= 0)].median()
 					if (fb_idx >= 0).any()
 					else conf.median()
 				)
 				gate_th = float(getattr(cfg_fb, 'prior_conf_gate', 0.5))
-				prior_alpha *= float(conf_med >= gate_th)
-			if prior_mode == 'logit':
-				logit = (logit.to(torch.float32) + prior_alpha * log_prior).to(
-					logit.dtype
-				)
-				logit = logit.clamp(-logit_clip, logit_clip)
-				if not torch.isfinite(logit).all():
-					raise FloatingPointError(
-						'[NaNGuard] logit non-finite after adding prior'
-					)
-			elif prior_mode == 'kl':
-				log_p = torch.log_softmax(logit / tau, dim=-1)
-				kl_bh = -(prior * log_p).sum(dim=-1)
-				use = (fb_idx >= 0) & covered  # ← 未カバー trace は平均から除外
-				prior_ce = kl_bh[use].mean() if use.any() else kl_bh.mean()
+				if conf_med < gate_th:
+					prior_alpha = 0.0  # gate off prior if low confidence
 
-			# --- base KL (use masked logits) ------------------------------------
+			# --- combine prior ------------------------------------------------
+			if prior_mode == 'logit':
+				# 保存: prior合成前（既にsanitize/clip済み）の安全なlogit
+				logit_base = logit.clone()
+
+				if have_prior and prior_alpha > 0.0 and log_prior is not None:
+					# まず prior 側も有限かチェック
+					if not torch.isfinite(log_prior).all():
+						# prior が壊れている → このバッチは prior 無効化
+						if bool(getattr(cfg_fb, 'prior_debug', False)):
+							print(
+								'[trend prior] non-finite log_prior -> disable prior for this batch'
+							)
+						prior_alpha = 0.0
+						logit = logit_base
+					else:
+						# FP32で合成してからclip→dtype復帰
+						device_type = 'cuda' if logit.is_cuda else 'cpu'
+						with torch.autocast(device_type=device_type, enabled=False):
+							logit32 = (
+								logit.to(torch.float32) + prior_alpha * log_prior
+							)  # fp32
+							logit32 = torch.nan_to_num(
+								logit32, nan=0.0, posinf=logit_clip, neginf=-logit_clip
+							).clamp_(-logit_clip, logit_clip)
+
+						if not torch.isfinite(logit32).all():
+							# ★ フォールバック: priorを無効化して続行
+							if bool(getattr(cfg_fb, 'prior_debug', False)):
+								bad = (~torch.isfinite(logit32)).sum().item()
+								print(
+									f'[trend prior] non-finite after add (count={bad}) -> disable prior for this batch'
+								)
+							prior_alpha = 0.0
+							logit = logit_base
+						else:
+							logit = logit32.to(logit.dtype)
+				# 最終ガード（prior無効でも一応）
+				logit = torch.nan_to_num(
+					logit, nan=0.0, posinf=logit_clip, neginf=-logit_clip
+				).clamp_(-logit_clip, logit_clip)
+
+			elif prior_mode == 'kl':
+				if have_prior and prior_alpha > 0.0 and prior is not None:
+					log_p_tmp = torch.log_softmax(logit / tau, dim=-1)
+					# 万一どちらかが非有限なら prior を無効化
+					if (not torch.isfinite(log_p_tmp).all()) or (
+						not torch.isfinite(prior).all()
+					):
+						if bool(getattr(cfg_fb, 'prior_debug', False)):
+							print(
+								'[trend prior KL] non-finite in prior/log_p -> disable prior for this batch'
+							)
+						prior_alpha = 0.0
+						prior_ce = logit.new_tensor(0.0)
+					else:
+						kl_bh = -(prior * log_p_tmp).sum(dim=-1)
+						use = (fb_idx >= 0) & covered
+						prior_ce = kl_bh[use].mean() if use.any() else kl_bh.mean()
+				else:
+					prior_ce = logit.new_tensor(0.0)
+			else:
+				raise ValueError(f'Unknown prior_mode: {prior_mode}')
+
+			# --- base KL over masked traces ----------------------------------
 			base = fb_seg_kl_loss(
 				logit.unsqueeze(1), target, valid_mask=valid_mask, tau=tau, eps=eps
 			)
-
-			# downstream uses the masked probabilities
 			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
 
 			base_prior = (
@@ -599,22 +616,19 @@ def make_fb_seg_criterion(cfg_fb):
 					'smooth': base.new_tensor(0.0),
 					'curv': base.new_tensor(0.0),
 					'prior': base_prior.detach(),
-					# 監視用: trend prior が何割の trace に効いているか
 					'prior_cov': covered.float().mean().detach(),
 				}
 
-			W = prob.size(-1)
+			# --- position (sec) for smoothing terms --------------------------
 			t = torch.arange(W, device=prob.device, dtype=prob.dtype)
 			pos = (prob * t).sum(dim=-1)  # (B,H)
 			if dt_sec is None:
 				dt = pos.new_ones((pos.size(0), 1))
 			else:
-				dt = dt_sec.to(pos.device, pos.dtype)
-				dt = dt.view(dt.size(0), 1)
+				dt = dt_sec.to(pos.device, pos.dtype).view(pos.size(0), 1)
 			pos_sec = pos * dt  # (B,H)
 
 			dx = (offsets[:, 1:] - offsets[:, :-1]).abs().to(pos_sec.dtype)
-			# データ適応の安全下限：メディアンの1e-4倍 or 1mm の大きい方
 			dx_med = dx.median()
 			dx_eps = torch.clamp(
 				dx_med * 1e-4, min=torch.tensor(1e-3, device=dx.device, dtype=dx.dtype)
@@ -662,7 +676,6 @@ def make_fb_seg_criterion(cfg_fb):
 				'smooth': (smooth_lambda * smooth).detach(),
 				'curv': (smooth2_lambda * loss_curv).detach(),
 				'prior': base_prior.detach(),
-				# 監視用: trend prior が何割の trace に効いているか
 				'prior_cov': covered.float().mean().detach(),
 			}
 
@@ -675,12 +688,7 @@ def make_fb_seg_criterion(cfg_fb):
 
 
 def make_fb_seg_mse_criterion():
-	"""Return MSE criterion for fb segmentation.
-
-	The loss averages the MSE over traces where ``fb_idx>=0``. If no valid
-	trace exists in the batch, the loss gracefully returns ``0`` without
-	raising errors or producing NaNs.
-	"""
+	"""MSE criterion averaged over traces where fb_idx>=0."""
 
 	def _criterion(
 		pred: torch.Tensor,
@@ -690,7 +698,6 @@ def make_fb_seg_mse_criterion():
 		mask=None,
 		**kwargs,
 	) -> torch.Tensor:
-		# pred/target: (B,1,H,W), fb_idx: (B,H)
 		diff2 = (pred - target) ** 2  # (B,1,H,W)
 		loss_bh = diff2.mean(dim=(1, 3))  # (B,H)
 		valid = (fb_idx >= 0).to(loss_bh.dtype)

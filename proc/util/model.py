@@ -390,7 +390,7 @@ class NetAE(nn.Module):
 		pre_feats = []
 		for b in self.pre_down:
 			x = b(x)
-			pre_feats.append(x)
+			pre_feats.append(x[:, :1])
 			if getattr(self, 'print_shapes', False):
 				print(f'[pre] {tuple(x.shape)}')
 
