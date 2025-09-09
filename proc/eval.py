@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from proc.util.velocity_mask import make_velocity_feasible_mask
 from proc.util.features import make_offset_channel
+from proc.util.velocity_mask import make_velocity_feasible_mask
 
 __all__ = ['val_one_epoch_fbseg', 'visualize_fb_seg_triplet']
 
@@ -99,60 +99,64 @@ def val_one_epoch_fbseg(
 	hit8 = 0
 	n_valid = 0
 	cfg_fb = cfg.loss.fb_seg
-        for i, (x, _, _, meta) in enumerate(val_loader):
-                x = x.to(device, non_blocking=True)
-                fb = meta['fb_idx'].to(device)
-                x_in = x
-                if getattr(cfg, 'model', None) and getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
-                        offs_ch = make_offset_channel(x, meta['offsets'])
-                        x_in = torch.cat([x, offs_ch], dim=1)
-                logits = model(x_in)
-                logit_raw = logits.squeeze(1)
-                B, H, W = logit_raw.shape
+	for i, (x, _, _, meta) in enumerate(val_loader):
+		x = x.to(device, non_blocking=True)
+		fb = meta['fb_idx'].to(device)
+		x_in = x
+		if (
+			getattr(cfg, 'model', None)
+			and getattr(cfg.model, 'use_offset_input', False)
+			and ('offsets' in meta)
+		):
+			offs_ch = make_offset_channel(x, meta['offsets'])
+			x_in = torch.cat([x, offs_ch], dim=1)
+		logits = model(x_in)
+		logit_raw = logits.squeeze(1)
+		B, H, W = logit_raw.shape
 
-		# === Always apply velocity-cone mask (match training) ===
-		velmask = make_velocity_feasible_mask(
-			offsets=meta['offsets'],
-			dt_sec=meta['dt_sec'],
-			W=W,
-			vmin=float(getattr(cfg_fb, 'vmin_mask', 500.0)),
-			vmax=float(getattr(cfg_fb, 'vmax_mask', 10000.0)),
-			t0_lo_ms=float(getattr(cfg_fb, 't0_lo_ms', -100.0)),
-			t0_hi_ms=float(getattr(cfg_fb, 't0_hi_ms', 80.0)),
-			taper_ms=float(getattr(cfg_fb, 'taper_ms', 10.0)),
-			device=logit_raw.device,
-			dtype=logit_raw.dtype,
+	# === Always apply velocity-cone mask (match training) ===
+	velmask = make_velocity_feasible_mask(
+		offsets=meta['offsets'],
+		dt_sec=meta['dt_sec'],
+		W=W,
+		vmin=float(getattr(cfg_fb, 'vmin_mask', 500.0)),
+		vmax=float(getattr(cfg_fb, 'vmax_mask', 10000.0)),
+		t0_lo_ms=float(getattr(cfg_fb, 't0_lo_ms', -100.0)),
+		t0_hi_ms=float(getattr(cfg_fb, 't0_hi_ms', 80.0)),
+		taper_ms=float(getattr(cfg_fb, 'taper_ms', 10.0)),
+		device=logit_raw.device,
+		dtype=logit_raw.dtype,
+	)
+	# fp32で安全にlogを作ってからdtypeを合わせる
+	vm32 = velmask.to(torch.float32)
+	has_any = vm32.sum(dim=-1, keepdim=True) > 0
+	vm32 = torch.where(has_any, vm32, torch.ones_like(vm32))
+	eps = float(getattr(cfg_fb, 'vel_log_eps', 1e-4))
+	logmask32 = torch.log(vm32.clamp_min(eps))
+	logit = logit_raw + logmask32.to(logit_raw.dtype)
+
+	tau = float(getattr(cfg_fb, 'tau', 1.0))
+	prob = torch.softmax(logit / tau, dim=-1)
+	pred = prob.argmax(dim=-1)
+	valid = fb >= 0
+	diff = (pred - fb).abs()
+	hit0 += ((diff == 0) & valid).sum().item()
+	hit2 += ((diff <= 2) & valid).sum().item()
+	hit4 += ((diff <= 4) & valid).sum().item()
+	hit8 += ((diff <= 8) & valid).sum().item()
+	n_valid += valid.sum().item()
+	if visualize and (i in viz_batches):
+		gs = int(epoch) if isinstance(epoch, int) else 0
+		fig = visualize_fb_seg_triplet(
+			x,
+			prob,
+			fb,
+			b=0,
+			writer=writer,
+			tag_prefix=f'fbseg/batch{i:04d}',
+			global_step=gs,
 		)
-		# fp32で安全にlogを作ってからdtypeを合わせる
-		vm32 = velmask.to(torch.float32)
-		has_any = vm32.sum(dim=-1, keepdim=True) > 0
-		vm32 = torch.where(has_any, vm32, torch.ones_like(vm32))
-		eps = float(getattr(cfg_fb, 'vel_log_eps', 1e-4))
-		logmask32 = torch.log(vm32.clamp_min(eps))
-		logit = logit_raw + logmask32.to(logit_raw.dtype)
-
-		tau = float(getattr(cfg_fb, 'tau', 1.0))
-		prob = torch.softmax(logit / tau, dim=-1)
-		pred = prob.argmax(dim=-1)
-		valid = fb >= 0
-		diff = (pred - fb).abs()
-		hit0 += ((diff == 0) & valid).sum().item()
-		hit2 += ((diff <= 2) & valid).sum().item()
-		hit4 += ((diff <= 4) & valid).sum().item()
-		hit8 += ((diff <= 8) & valid).sum().item()
-		n_valid += valid.sum().item()
-		if visualize and (i in viz_batches):
-			gs = int(epoch) if isinstance(epoch, int) else 0
-			fig = visualize_fb_seg_triplet(
-				x,
-				prob,
-				fb,
-				b=0,
-				writer=writer,
-				tag_prefix=f'fbseg/batch{i:04d}',
-				global_step=gs,
-			)
-			plt.close(fig)
+		plt.close(fig)
 	return {
 		'hit@0': float(hit0) / max(n_valid, 1),
 		'hit@2': float(hit2) / max(n_valid, 1),
