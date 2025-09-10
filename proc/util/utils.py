@@ -143,6 +143,8 @@ class SmoothedValue:
 
 	@property
 	def global_avg(self):
+		if self.count == 0:
+			return 0.0
 		return self.total / self.count
 
 	@property
@@ -154,6 +156,11 @@ class SmoothedValue:
 		return self.deque[-1]
 
 	def __str__(self):
+		if self.count == 0:
+			try:
+				return self.fmt.format(median=0, avg=0, global_avg=0, max=0, value=0)
+			except Exception:
+				return '0'
 		return self.fmt.format(
 			median=self.median,
 			avg=self.avg,
