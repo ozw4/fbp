@@ -17,7 +17,6 @@ def _grads_all_finite(parameters) -> bool:
 	return True
 
 
-
 def _finite_or_report(name, t, meta=None):
 	"""Return True if t is None or all finite. Otherwise print a short report."""
 	if t is None:
@@ -249,19 +248,26 @@ def train_one_epoch(
 				except Exception:
 					pass
 				if not _grads_all_finite(model.parameters()):
-					print('[NaNGuard] non-finite gradients; skipping optimizer step', flush=True)
+					print(
+						'[NaNGuard] non-finite gradients; skipping optimizer step',
+						flush=True,
+					)
 					optimizer.zero_grad(set_to_none=True)
 					accum_loss = 0.0
 					accum_loss_base = 0.0
 					accum_loss_smooth = 0.0
 					accum_loss_curv = 0.0
+					scaler.update()
 					continue
 				clip_grad_norm_(model.parameters(), max_norm=1.0)
 				scaler.step(optimizer)
 				scaler.update()
 			else:
 				if not _grads_all_finite(model.parameters()):
-					print('[NaNGuard] non-finite gradients; skipping optimizer step', flush=True)
+					print(
+						'[NaNGuard] non-finite gradients; skipping optimizer step',
+						flush=True,
+					)
 					optimizer.zero_grad(set_to_none=True)
 					accum_loss = 0.0
 					accum_loss_base = 0.0
