@@ -26,6 +26,8 @@ Thumbs.db
 *.sgy
 *.segy
 *.png
+*.pth
+
 data/
 result/
 tmp_code/
@@ -34,4 +36,3 @@ debug_*/
 *.so
 *.o
 *.a
-*.pth
