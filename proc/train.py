@@ -510,6 +510,7 @@ for epoch in range(cfg.start_epoch, epochs):
 		print('  best SNR Δ(dB):', best_snr)
 		print('  synth MSE/MAE/PSNR:', synthe_metrics)
 		print('  best MSE:', best_mse)
+
 	elif task == 'fb_seg':
 		fb_metrics = val_one_epoch_fbseg(
 			eval_model,
