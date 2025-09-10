@@ -26,6 +26,13 @@ def _finite_or_report(name, t, meta=None):
 	return bool(finite)
 
 
+def _grads_all_finite(parameters) -> bool:  # [NaNGuard]
+	for p in parameters:
+		if p.grad is not None and not torch.isfinite(p.grad).all():
+			return False
+	return True
+
+
 def _freeze_by_epoch(
 	model: torch.nn.Module, epoch: int, freeze_epochs: int, unfreeze_steps: int
 ) -> None:
@@ -34,16 +41,16 @@ def _freeze_by_epoch(
 	Parameters
 	----------
 	model: torch.nn.Module
-	    Network with ``decoder`` and ``seg_head`` attributes.
+		Network with ``decoder`` and ``seg_head`` attributes.
 	epoch: int
-	    Current epoch index (0-based).
+		Current epoch index (0-based).
 	freeze_epochs: int
-	    Number of initial epochs during which only the head and the last
-	    decoder blocks are trained.
+		Number of initial epochs during which only the head and the last
+		decoder blocks are trained.
 	unfreeze_steps: int
-	    After ``freeze_epochs`` epochs, additional decoder blocks are
-	    unfrozen every ``unfreeze_steps`` epochs. Once all decoder blocks are
-	    unfrozen, the encoder (pre/down/backbone) is unfrozen as well.
+		After ``freeze_epochs`` epochs, additional decoder blocks are
+		unfrozen every ``unfreeze_steps`` epochs. Once all decoder blocks are
+		unfrozen, the encoder (pre/down/backbone) is unfrozen as well.
 
 	"""
 	if freeze_epochs <= 0 and unfreeze_steps <= 0:
@@ -110,6 +117,7 @@ def train_one_epoch(
 	step: int = 0,
 	freeze_epochs: int = 0,
 	unfreeze_steps: int = 1,
+	loss_explosion_threshold: float | None = 1e6,
 ):
 	"""Run one training epoch."""
 	if getattr(model, '_transfer_loaded', False) and freeze_epochs > 0:
@@ -136,12 +144,49 @@ def train_one_epoch(
 	metric_logger.add_meter(
 		'loss_curv', utils.SmoothedValue(window_size=10, fmt='{value:.4f}')
 	)
+	metric_logger.add_meter(
+		'batches_skipped_input', utils.SmoothedValue(window_size=10, fmt='{value:.0f}')
+	)
+	metric_logger.add_meter(
+		'batches_skipped_logits', utils.SmoothedValue(window_size=10, fmt='{value:.0f}')
+	)
+	metric_logger.add_meter(
+		'batches_skipped_loss', utils.SmoothedValue(window_size=10, fmt='{value:.0f}')
+	)
+	metric_logger.add_meter(
+		'steps_skipped_grad', utils.SmoothedValue(window_size=10, fmt='{value:.0f}')
+	)
+	metric_logger.add_meter(
+		'steps_skipped_explosion',
+		utils.SmoothedValue(window_size=10, fmt='{value:.0f}'),
+	)
 	header = f'Epoch: [{epoch}]'
 	optimizer.zero_grad()
 	accum_loss = 0.0
 	accum_loss_base = 0.0
 	accum_loss_smooth = 0.0
 	accum_loss_curv = 0.0
+	batches_skipped_input = 0
+	batches_skipped_logits = 0
+	batches_skipped_loss = 0
+	steps_skipped_grad = 0
+	steps_skipped_explosion = 0
+
+	def log_counters():  # [NaNGuard]
+		metric_logger.update(
+			batches_skipped_input=batches_skipped_input,
+			batches_skipped_logits=batches_skipped_logits,
+			batches_skipped_loss=batches_skipped_loss,
+			steps_skipped_grad=steps_skipped_grad,
+			steps_skipped_explosion=steps_skipped_explosion,
+		)
+		if writer:
+			writer.add_scalar('batches_skipped_input', batches_skipped_input, step)
+			writer.add_scalar('batches_skipped_logits', batches_skipped_logits, step)
+			writer.add_scalar('batches_skipped_loss', batches_skipped_loss, step)
+			writer.add_scalar('steps_skipped_grad', steps_skipped_grad, step)
+			writer.add_scalar('steps_skipped_explosion', steps_skipped_explosion, step)
+
 	for i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
 		x_masked, x_tgt, mask_or_none, meta = batch
 
@@ -157,8 +202,9 @@ def train_one_epoch(
 				'dt_sec', meta.get('dt_sec') if isinstance(meta, dict) else None, meta
 			)
 		):
-			print('[SKIP] non-finite inputs; skipping batch')
+			print('[NaNGuard] non-finite inputs; skipping batch', flush=True)
 			optimizer.zero_grad(set_to_none=True)
+			batches_skipped_input += 1
 			continue
 		x_tgt = x_tgt.to(device, non_blocking=True)
 		if mask_or_none is not None:
@@ -199,10 +245,11 @@ def train_one_epoch(
 					offs_ch = make_offset_channel(x_masked, meta['offsets'])
 					x_in = torch.cat([x_masked, offs_ch], dim=1)
 				pred = model(x_in)
-				if not _finite_or_report('logits', pred, meta):
-					print('[SKIP] non-finite logits; skipping batch')
-					optimizer.zero_grad(set_to_none=True)
-					continue
+			if not _finite_or_report('logits', pred, meta):
+				print('[NaNGuard] non-finite logits; skipping batch', flush=True)
+				optimizer.zero_grad(set_to_none=True)
+				batches_skipped_logits += 1
+				continue
 			out = criterion(
 				pred,
 				x_tgt,
@@ -216,10 +263,24 @@ def train_one_epoch(
 			else:
 				total_loss, loss_logs = out, {}
 			if not torch.isfinite(total_loss):
-				print('[SKIP] non-finite loss; skipping batch')
+				print('[NaNGuard] non-finite loss; skipping batch', flush=True)
 				optimizer.zero_grad(set_to_none=True)
+				batches_skipped_loss += 1
 				continue
 			main_loss = total_loss / gradient_accumulation_steps
+			if (
+				loss_explosion_threshold is not None
+				and main_loss.item() > loss_explosion_threshold
+			):
+				print('[NaNGuard] loss explosion; skip step', flush=True)
+				optimizer.zero_grad(set_to_none=True)
+				steps_skipped_explosion += 1
+				log_counters()
+				accum_loss = 0.0
+				accum_loss_base = 0.0
+				accum_loss_smooth = 0.0
+				accum_loss_curv = 0.0
+				continue
 		if scaler:
 			scaler.scale(main_loss).backward()
 		else:
@@ -235,17 +296,32 @@ def train_one_epoch(
 		if lc is not None:
 			accum_loss_curv += lc.item() / gradient_accumulation_steps
 		if (i + 1) % gradient_accumulation_steps == 0:
+			grads_ok = True
 			if scaler:
 				try:
 					scaler.unscale_(optimizer)
 				except Exception:
 					pass
-				clip_grad_norm_(model.parameters(), max_norm=1.0)
-				scaler.step(optimizer)
-				scaler.update()
+				grads_ok = _grads_all_finite(model.parameters())
+				if grads_ok:
+					clip_grad_norm_(model.parameters(), max_norm=1.0)
+					scaler.step(optimizer)
+					scaler.update()
 			else:
-				clip_grad_norm_(model.parameters(), max_norm=1.0)
-				optimizer.step()
+				grads_ok = _grads_all_finite(model.parameters())
+				if grads_ok:
+					clip_grad_norm_(model.parameters(), max_norm=1.0)
+					optimizer.step()
+			if not grads_ok:
+				print('[NaNGuard] non-finite gradients; skip step', flush=True)
+				optimizer.zero_grad(set_to_none=True)
+				steps_skipped_grad += 1
+				log_counters()
+				accum_loss = 0.0
+				accum_loss_base = 0.0
+				accum_loss_smooth = 0.0
+				accum_loss_curv = 0.0
+				continue
 			if ema:
 				ema.update(model)
 			optimizer.zero_grad(set_to_none=True)
@@ -259,6 +335,7 @@ def train_one_epoch(
 			metric_logger.update(loss_base=accum_loss_base)
 			metric_logger.update(loss_smooth=accum_loss_smooth)
 			metric_logger.update(loss_curv=accum_loss_curv)
+			log_counters()
 
 			if writer:
 				writer.add_scalar('loss', accum_loss, step)
