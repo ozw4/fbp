@@ -34,3 +34,4 @@ debug_*/
 *.so
 *.o
 *.a
+*.pth
