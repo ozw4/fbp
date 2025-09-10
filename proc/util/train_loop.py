@@ -10,6 +10,14 @@ from proc.util.features import make_offset_channel
 from .loss import shift_robust_l2_pertrace_vec
 
 
+def _grads_all_finite(parameters) -> bool:
+	for p in parameters:
+		if p.grad is not None and not torch.isfinite(p.grad).all():
+			return False
+	return True
+
+
+
 def _finite_or_report(name, t, meta=None):
 	"""Return True if t is None or all finite. Otherwise print a short report."""
 	if t is None:
@@ -240,10 +248,26 @@ def train_one_epoch(
 					scaler.unscale_(optimizer)
 				except Exception:
 					pass
+				if not _grads_all_finite(model.parameters()):
+					print('[NaNGuard] non-finite gradients; skipping optimizer step', flush=True)
+					optimizer.zero_grad(set_to_none=True)
+					accum_loss = 0.0
+					accum_loss_base = 0.0
+					accum_loss_smooth = 0.0
+					accum_loss_curv = 0.0
+					continue
 				clip_grad_norm_(model.parameters(), max_norm=1.0)
 				scaler.step(optimizer)
 				scaler.update()
 			else:
+				if not _grads_all_finite(model.parameters()):
+					print('[NaNGuard] non-finite gradients; skipping optimizer step', flush=True)
+					optimizer.zero_grad(set_to_none=True)
+					accum_loss = 0.0
+					accum_loss_base = 0.0
+					accum_loss_smooth = 0.0
+					accum_loss_curv = 0.0
+					continue
 				clip_grad_norm_(model.parameters(), max_norm=1.0)
 				optimizer.step()
 			if ema:
