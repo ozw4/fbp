@@ -9,11 +9,14 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend'
+suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_inpoffs_unfreeze'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
 drop_path_rate: 0
+
+model:
+  use_offset_input: true
 
 # 一般設定
 num_workers: 16
@@ -45,7 +48,7 @@ resume:   /workspace/proc/result/recon/train_field_list_edgenext_small/checkpoin
 start_epoch: 0
 
 # Freeze schedule
-freeze_epochs: 2
+freeze_epochs: 0
 unfreeze_steps: 2
 resume_exclude_head: true  # skip loading head weights when resuming
 resume_exclude_prefixes:
@@ -120,9 +123,9 @@ loss:
     vel_log_eps: 1.0e-4    # fp16安全な ε
     vel_log_neg: -80.0     # ゼロ要素に与える大負値(soft-マスクのlog)
     # --- trend-based prior ---
-    use_trend_prior: true      # まず有効化して挙動確認
+    use_trend_prior: True    # まず有効化して挙動確認
     prior_mode: logit          # 'logit' | 'kl'
-    prior_alpha: 0.1         # priorの強さ
+    prior_alpha: 0.01         # priorの強さ
     prior_sigma_ms: 50.0       # ガウスpriorの標準偏差 [ms]
     trend_section: 128         # セクション長
     trend_stride: 64           # セクション間ストライド
@@ -132,5 +135,5 @@ loss:
     prior_log_eps: 1.0e-4      # priorのlog安定化用 ε
     prior_conf_gate: 0.5
 debug:
-  audit_batches: 50          # 0 disables the audit
+  audit_batches: 0          # 0 disables the audit
   audit_cov_threshold: 0.5   # coverage threshold to flag low-coverage valid traces

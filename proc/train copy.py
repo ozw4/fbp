@@ -26,6 +26,9 @@ from proc.util.ema import ModelEMA
 from proc.util.eval import eval_synthe, val_one_epoch_snr
 from proc.util.loss import make_criterion, make_fb_seg_criterion
 from proc.util.model import NetAE, adjust_first_conv_padding
+from proc.util.model_utils import (
+	inflate_input_convs_to_2ch,
+)
 from proc.util.predict import cover_all_traces_predict_chunked
 from proc.util.rng_util import worker_init_fn
 from proc.util.train_loop import train_one_epoch
@@ -231,20 +234,23 @@ if audit_batches > 0:
 	# audit_offsets_and_mask_coverage(val_loader, cfg.loss.fb_seg, max_batches=min(20, audit_batches), cov_threshold=cov_th)
 print('[AUDIT] done.')
 
-synthe_noise_segy = (
-	'/home/dcuser/data/Synthetic/marmousi/shot801_decimate_fieldnoise008.sgy'
-)
-synthe_clean_segy = '/home/dcuser/data/Synthetic/marmousi/shotdata001_801_decimate.sgy'
+if task == 'recon':
+	synthe_noise_segy = (
+		'/home/dcuser/data/Synthetic/marmousi/shot801_decimate_fieldnoise008.sgy'
+	)
+	synthe_clean_segy = (
+		'/home/dcuser/data/Synthetic/marmousi/shotdata001_801_decimate.sgy'
+	)
 
-# 例) FFID 401 と 601 を抽出（W は 6016 に揃える）
-synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
-	synthe_noise_segy,
-	synthe_clean_segy,
-	extract_key1idxs=[1, 401, 801, 1201, 1601],
-	target_len=6016,
-	standardize=True,
-	endian='little',
-)
+	# 例) FFID 401 と 601 を抽出（W は 6016 に揃える）
+	synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
+		synthe_noise_segy,
+		synthe_clean_segy,
+		extract_key1idxs=[1, 401, 801, 1201, 1601],
+		target_len=6016,
+		standardize=True,
+		endian='little',
+	)
 
 print(cfg.backbone)
 model = NetAE(
@@ -288,6 +294,17 @@ optimizer = torch.optim.AdamW(
 	betas=(0.9, 0.999),
 	weight_decay=cfg.weight_decay,
 )
+
+
+def check_optimizer_coverage(optimizer, model):
+	opt_ids = {id(p) for g in optimizer.param_groups for p in g['params']}
+	total = sum(p.numel() for p in model.parameters())
+	inopt = sum(p.numel() for p in model.parameters() if id(p) in opt_ids)
+	dup = sum(len(g['params']) for g in optimizer.param_groups) - len(opt_ids)
+	print(f'[opt] in_optimizer={inopt}/{total} ({inopt / total:.1%}), duplicates={dup}')
+
+
+check_optimizer_coverage(optimizer, model)
 
 warmup_iters = cfg.lr_warmup_epochs * len(train_loader)
 
@@ -335,13 +352,18 @@ if cfg.resume:
 			print(
 				f'[resume] skip optimizer/scheduler: {e} -> reinit and restart from epoch 0'
 			)
-	else:
-		print('[resume] loaded model weights only (optimizer/scheduler reinitialized)')
+		else:
+			print(
+				'[resume] loaded model weights only (optimizer/scheduler reinitialized)'
+			)
+
+if getattr(cfg.model, 'use_offset_input', False):
+	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='zero')
 
 # 3) 段階解凍のガード用フラグ
 model._transfer_loaded = transfer_loaded
 
-if not cfg.distributed:
+if not cfg.distributed and cfg.freeze_epochs == 0:
 	model = torch.compile(model, fullgraph=True, dynamic=False, mode='default')
 
 ema = (
@@ -378,6 +400,7 @@ for epoch in range(cfg.start_epoch, epochs):
 		epoch=epoch,
 		print_freq=cfg.print_freq,
 		writer=train_writer,
+		use_offset_input=getattr(cfg.model, 'use_offset_input', False),
 		use_amp=use_amp,
 		scaler=scaler,
 		ema=ema,
