@@ -114,8 +114,8 @@ class MaskedSegyGather(Dataset):
 					chno_unique_keys=chno_unique_keys,
 					n_samples=f.samples.size,
 					n_traces=f.tracecount,
-                                        dt=dt,
-                                        dt_sec=dt_sec,
+					dt=dt,
+					dt_sec=dt_sec,
 					segy_obj=f,
 					fb=fb,
 					offsets=offsets,
@@ -275,15 +275,15 @@ class MaskedSegyGather(Dataset):
 			off_t = torch.from_numpy(off_subset)
 			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
 			sample = {
-			'masked': xm,
-			'original': x_t,
-			'fb_idx': fb_idx_t,
-			'offsets': off_t,
-			'dt_sec': torch.tensor(dt_eff_sec, dtype=torch.float32),
-			'mask_indices': mask_idx,
-			'key_name': key_name,
-			'indices': selected_indices,
-			'file_path': info['path'],
+				'masked': xm,
+				'original': x_t,
+				'fb_idx': fb_idx_t,
+				'offsets': off_t,
+				'dt_sec': torch.tensor(dt_eff_sec, dtype=torch.float32),
+				'mask_indices': mask_idx,
+				'key_name': key_name,
+				'indices': selected_indices,
+				'file_path': info['path'],
 			}
 			if self.target_mode == 'fb_seg':
 				sample['target'] = target_t

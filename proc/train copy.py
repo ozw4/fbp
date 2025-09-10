@@ -365,7 +365,6 @@ model._transfer_loaded = transfer_loaded
 
 if not cfg.distributed and cfg.freeze_epochs == 0:
 	model = torch.compile(model, fullgraph=True, dynamic=False, mode='default')
-	print('[compile] model compiled with torch.compile')
 
 ema = (
 	ModelEMA(model_without_ddp, decay=cfg.ema_decay, device=device)
