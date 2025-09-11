@@ -101,6 +101,7 @@ train_dataset = MaskedSegyGather(
 	header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
 	use_superwindow=getattr(cfg.dataset, 'use_superwindow', False),
 	sw_halfspan=getattr(cfg.dataset, 'sw_halfspan', 0),
+	sw_prob=getattr(cfg.dataset, 'sw_prob', 1.0),
 	mask_ratio=cfg.dataset.mask_ratio,
 	mask_mode=cfg.dataset.mask_mode,
 	mask_noise_std=cfg.dataset.mask_noise_std,

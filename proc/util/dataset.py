@@ -130,6 +130,7 @@ class MaskedSegyGather(Dataset):
 		primary_key_weights: tuple[float, ...] | None = None,
 		use_superwindow: bool = False,
 		sw_halfspan: int = 0,
+		sw_prob: float = 0.3,
 		use_header_cache: bool = False,
 		header_cache_dir: str | None = None,
 		mask_ratio: float = 0.5,
@@ -169,6 +170,7 @@ class MaskedSegyGather(Dataset):
 		)
 		self.use_superwindow = use_superwindow
 		self.sw_halfspan = int(sw_halfspan)
+		self.sw_prob = sw_prob
 		self.use_header_cache = use_header_cache
 		self.header_cache_dir = header_cache_dir
 
@@ -378,7 +380,10 @@ class MaskedSegyGather(Dataset):
 			key = random.choice(unique_keys)
 			indices = key_to_indices[key]
 			# === superwindow: collect neighboring primary keys (no averaging) ===
-			if self.use_superwindow and self.sw_halfspan > 0:
+			do_super = self.use_superwindow and self.sw_halfspan > 0
+			if do_super and self.sw_prob < 1.0:
+				do_super = random.random() < self.sw_prob
+			if do_super:
 				# Build a window by position in the sorted list of unique primary keys
 				uniq = info.get(f'{key_name}_unique_keys', None)
 				if isinstance(uniq, (list, tuple)):

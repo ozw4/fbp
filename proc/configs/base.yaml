@@ -83,6 +83,7 @@ dataset:
   primary_key_weights: null   # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
   use_superwindow: true        # true で近傍 primary を結合（非平均）
   sw_halfspan: 1                # ±いくつ結合するか（0で無効）
+  sw_prob: 0.3
   use_header_cache: true         # 既定false。trueで .npz を利用
   header_cache_dir: null         # nullなら SEG-Y と同じ場所に作成
   mask_ratio: 0
