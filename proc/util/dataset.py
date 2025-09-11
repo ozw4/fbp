@@ -160,6 +160,11 @@ class MaskedSegyGather(Dataset):
 		augment_freq_restandardize: bool = True,
 		target_mode: Literal['recon', 'fb_seg'] = 'recon',
 		label_sigma: float = 1.0,
+		reject_fblc: bool = False,
+		fblc_percentile: float = 95.0,
+		fblc_thresh_ms: float = 8.0,
+		fblc_min_pairs: int = 16,
+		fblc_apply_on: Literal['any', 'super_only'] = 'any',
 	) -> None:
 		"""Initialize dataset.
 
@@ -202,6 +207,11 @@ class MaskedSegyGather(Dataset):
 		self.augment_freq_restandardize = augment_freq_restandardize
 		self.target_mode = target_mode
 		self.label_sigma = label_sigma
+		self.reject_fblc = bool(reject_fblc)
+		self.fblc_percentile = float(fblc_percentile)
+		self.fblc_thresh_ms = float(fblc_thresh_ms)
+		self.fblc_min_pairs = int(fblc_min_pairs)
+		self.fblc_apply_on = fblc_apply_on
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
@@ -315,12 +325,7 @@ class MaskedSegyGather(Dataset):
 						1.0,
 						np.where(scal > 0.0, scal, 1.0 / np.abs(scal)),
 					)
-					if scal_eff.size == 1:
-						srcx *= scal_eff
-						srcy *= scal_eff
-						grx *= scal_eff
-						gry *= scal_eff
-					elif scal_eff.size == srcx.size:
+					if scal_eff.size == 1 or scal_eff.size == srcx.size:
 						srcx *= scal_eff
 						srcy *= scal_eff
 						grx *= scal_eff
@@ -787,6 +792,35 @@ class MaskedSegyGather(Dataset):
 			fb_idx_t = torch.from_numpy(fb_idx_win)
 			off_t = torch.from_numpy(off_subset)
 			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
+
+			# --- FBLC filter: robust lateral continuity check on first-breaks ---
+			if self.reject_fblc:
+				# Gate by scope
+				apply_gate = (self.fblc_apply_on == 'any')
+				if self.fblc_apply_on == 'super_only':
+					# best-effort: treat as super when superwindow is enabled
+					apply_gate = bool(
+						getattr(self, 'use_superwindow', False)
+						and getattr(self, 'sw_halfspan', 0) > 0
+					)
+				if apply_gate:
+					v = fb_idx_win
+					valid = (v >= 0)
+					# require enough adjacent valid pairs
+					if int(valid.sum()) >= 2:
+						vv = v[valid].astype(np.float64, copy=False)
+						diffs = np.abs(np.diff(vv))  # samples
+						if diffs.size >= int(self.fblc_min_pairs):
+							p = float(
+								np.percentile(
+									diffs, float(self.fblc_percentile)
+								)
+							)
+							p_ms = p * float(dt_eff_sec) * 1000.0
+							if p_ms > float(self.fblc_thresh_ms):
+								# Reject and resample
+								continue
+
 			sample = {
 				'masked': xm,
 				'original': x_t,
