@@ -321,6 +321,7 @@ class MaskedSegyGather(Dataset):
 
 	def __getitem__(self, _=None):
 		while True:
+			secondary_key = 'none'
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
 			fb = info['fb']
@@ -425,6 +426,8 @@ class MaskedSegyGather(Dataset):
 				else:  # key_name == 'cmp'
 					secondary = 'offset'
 
+				secondary_key = secondary
+
 				# secondary の値を取得
 				if secondary == 'chno':
 					sec_vals = info['chno_values'][indices]
@@ -458,6 +461,20 @@ class MaskedSegyGather(Dataset):
 				selected_indices = indices
 				pad_len = 128 - n_total
 			selected_indices = np.asarray(selected_indices, dtype=np.int64)
+
+			# 例: key_name が 'ffid' のとき FFID の配列
+			prim_vals_sel = info[f'{key_name}_values'][selected_indices].astype(
+				np.int64, copy=False
+			)
+
+			# ラベル順（昇順）に整えた “集合” ＝ これ自体が label→値 の対応表になる
+			primary_label_values = np.unique(
+				prim_vals_sel
+			)  # shape: [K], 例: [1201,1203,1204]
+
+			# 文字列の集合（ログ/CSV用に便利、可変長でも DataLoader が壊れない）
+			primary_unique_str = ','.join(map(str, primary_label_values.tolist()))
+
 			fb_subset = fb[selected_indices]
 			if pad_len > 0:
 				fb_subset = np.concatenate(
@@ -561,8 +578,10 @@ class MaskedSegyGather(Dataset):
 				'dt_sec': torch.tensor(dt_eff_sec, dtype=torch.float32),
 				'mask_indices': mask_idx,
 				'key_name': key_name,
+				'secondary_key': secondary_key,
 				'indices': selected_indices,
 				'file_path': info['path'],
+				'primary_unique': primary_unique_str,  # "1201,1203,1204"
 			}
 			if self.target_mode == 'fb_seg':
 				sample['target'] = target_t
