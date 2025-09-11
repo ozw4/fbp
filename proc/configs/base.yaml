@@ -4,12 +4,12 @@ defaults:
 
 # データセット
 data_root : '/home/dcuser/data/ActiveSeisField/'
-train_field_list: train_field_list_wotstkres.txt
+train_field_list: train_field_list_tstkres.txt
 valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_inpoffs_unfreeze'
+suffix: 'test' #'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_inpoffs_unfreeze_addcmp'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -79,6 +79,10 @@ snr:
   noise_std: ${dataset.mask_noise_std}
 
 dataset:
+  primary_keys: [ffid, chno, cmp]        # 例: [ffid, chno, cmp] / [ffid] / [chno, cmp]
+  primary_key_weights: null   # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
+  use_header_cache: true         # 既定false。trueで .npz を利用
+  header_cache_dir: null         # nullなら SEG-Y と同じ場所に作成
   mask_ratio: 0
   mask_mode: replace         # replace | add
   mask_noise_std: 1

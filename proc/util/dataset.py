@@ -1,6 +1,7 @@
 import random
 import warnings
 from fractions import Fraction
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -17,6 +18,103 @@ from .augment import (
 __all__ = ['MaskedSegyGather']
 
 
+def _load_headers_with_cache(
+	segy_path: str,
+	ffid_byte,
+	chno_byte,
+	cmp_byte=None,
+	cache_dir: str | None = None,
+	rebuild: bool = False,
+):
+	segy_p = Path(segy_path)
+	cache_p = (
+		Path(cache_dir) / (segy_p.name + '.headers.npz')
+		if cache_dir
+		else segy_p.with_suffix(segy_p.suffix + '.headers.npz')
+	)
+
+	# 既存かつ新しければキャッシュを使う
+
+	try:
+		if (
+			(not rebuild)
+			and cache_p.exists()
+			and cache_p.stat().st_mtime >= segy_p.stat().st_mtime
+		):
+			print(
+				rebuild,
+				cache_p.exists(),
+				cache_p.stat().st_mtime >= segy_p.stat().st_mtime,
+			)
+			z = np.load(cache_p, allow_pickle=False)
+			meta = {
+				'ffid_values': z['ffid_values'],
+				'chno_values': z['chno_values'],
+				'cmp_values': (z['cmp_values'] if 'cmp_values' in z.files else None),
+				'offsets': z['offsets'],
+				'dt_us': int(z['dt_us']),
+				'n_traces': int(z['n_traces']),
+				'n_samples': int(z['n_samples']),
+			}
+			print(f'Loaded header cache from {cache_p}')
+			return meta
+	except Exception:
+		# 壊れている等は作り直す
+		pass
+
+	# キャッシュ無 or 不正 → segyio で読み直し
+	with segyio.open(segy_path, 'r', ignore_geometry=True) as f:
+		ffid_values = np.asarray(f.attributes(ffid_byte)[:], dtype=np.int32)
+		chno_values = np.asarray(f.attributes(chno_byte)[:], dtype=np.int32)
+		cmp_values = None
+		if cmp_byte is not None:
+			try:
+				cmp_values = np.asarray(f.attributes(cmp_byte)[:], dtype=np.int32)
+			except Exception:
+				cmp_values = None
+
+		try:
+			offsets = np.asarray(
+				f.attributes(segyio.TraceField.offset)[:], dtype=np.float32
+			)
+			if len(offsets) != f.tracecount:
+				warnings.warn(f'offset length mismatch in {segy_path}')
+				offsets = np.zeros(f.tracecount, dtype=np.float32)
+		except Exception:
+			warnings.warn(f'failed to read offsets from {segy_path}')
+			offsets = np.zeros(f.tracecount, dtype=np.float32)
+
+		dt_us = int(f.bin[segyio.BinField.Interval])
+		meta = dict(
+			ffid_values=ffid_values,
+			chno_values=chno_values,
+			cmp_values=(
+				cmp_values if cmp_values is not None else np.array([], dtype=np.int32)
+			),
+			offsets=offsets,
+			dt_us=dt_us,
+			n_traces=f.tracecount,
+			n_samples=f.samples.size,
+		)
+
+	# 保存（一時ファイル→置換で安全に）
+	try:
+		tmp = cache_p.with_name(cache_p.stem + '.tmp' + cache_p.suffix)
+		np.savez_compressed(tmp, **meta)
+		print(f'Saved header cache to {cache_p}')
+		tmp.replace(cache_p)
+	except Exception:
+		pass
+
+	# 返却整形
+	meta['cmp_values'] = (
+		None
+		if (isinstance(meta['cmp_values'], np.ndarray) and meta['cmp_values'].size == 0)
+		else meta['cmp_values']
+	)
+	return meta
+
+
 class MaskedSegyGather(Dataset):
 	"""Dataset reading SEG-Y gathers with optional augmentation."""
 
@@ -26,6 +124,12 @@ class MaskedSegyGather(Dataset):
 		fb_files: list[str],
 		ffid_byte=segyio.TraceField.FieldRecord,
 		chno_byte=segyio.TraceField.TraceNumber,
+		cmp_byte=segyio.TraceField.CDP,
+		primary_keys: tuple[str, ...]
+		| None = None,  # 例: ('ffid','chno','cmp') / ('ffid',)
+		primary_key_weights: tuple[float, ...] | None = None,
+		use_header_cache: bool = False,
+		header_cache_dir: str | None = None,
 		mask_ratio: float = 0.5,
 		mask_mode: Literal['replace', 'add'] = 'replace',
 		mask_noise_std: float = 1.0,
@@ -56,6 +160,15 @@ class MaskedSegyGather(Dataset):
 		self.fb_files = fb_files
 		self.ffid_byte = ffid_byte
 		self.chno_byte = chno_byte
+		self.cmp_byte = cmp_byte
+		self.primary_keys = tuple(primary_keys) if primary_keys else None
+		self.primary_key_weights = (
+			tuple(primary_key_weights) if primary_key_weights else None
+		)
+		self.use_header_cache = use_header_cache
+		self.header_cache_dir = header_cache_dir
+
+		self._valid_primary_keys = {'ffid', 'chno', 'cmp'}
 		self.mask_ratio = mask_ratio
 		self.mask_mode = mask_mode
 		self.mask_noise_std = mask_noise_std
@@ -77,31 +190,73 @@ class MaskedSegyGather(Dataset):
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
+			print(self.use_header_cache, self.header_cache_dir)
+			if self.use_header_cache:
+				meta = _load_headers_with_cache(
+					segy_path,
+					self.ffid_byte,
+					self.chno_byte,
+					self.cmp_byte,
+					cache_dir=self.header_cache_dir,
+					rebuild=False,  # 必要なら True に
+				)
+				ffid_values = meta['ffid_values']
+				chno_values = meta['chno_values']
+				cmp_values = meta['cmp_values']
+				offsets = meta['offsets']
+				dt_us = meta['dt_us']
+				n_traces = meta['n_traces']
+				n_samples = meta['n_samples']
+				dt = dt_us / 1e3
+				dt_sec = dt_us * 1e-6
+			else:
+				# 従来の読み方（そのまま）
+				f_tmp = segyio.open(segy_path, 'r', ignore_geometry=True)
+				ffid_values = f_tmp.attributes(self.ffid_byte)[:]
+				chno_values = f_tmp.attributes(self.chno_byte)[:]
+				cmp_values = None
+				if self.cmp_byte is not None:
+					try:
+						cmp_values = f_tmp.attributes(self.cmp_byte)[:]
+					except Exception as e:
+						warnings.warn(f'CMP header not available for {segy_path}: {e}')
+						cmp_values = None
+				dt_us = int(f_tmp.bin[segyio.BinField.Interval])
+				dt = dt_us / 1e3
+				dt_sec = dt_us * 1e-6
+				try:
+					offsets = f_tmp.attributes(segyio.TraceField.offset)[:]
+					offsets = np.asarray(offsets, dtype=np.float32)
+					if len(offsets) != f_tmp.tracecount:
+						warnings.warn(f'offset length mismatch in {segy_path}')
+						offsets = np.zeros(f_tmp.tracecount, dtype=np.float32)
+				except Exception as e:
+					warnings.warn(f'failed to read offsets from {segy_path}: {e}')
+					offsets = np.zeros(f_tmp.tracecount, dtype=np.float32)
+				n_traces = f_tmp.tracecount
+				n_samples = f_tmp.samples.size
+				f_tmp.close()
+			# ▲▲ ここまでヘッダ取得 ▲▲
+
+			# 以降は従来どおり：mmap用に開いて保持
 			f = segyio.open(segy_path, 'r', ignore_geometry=True)
 			mmap = f.trace.raw[:]
-			ffid_values = f.attributes(self.ffid_byte)[:]
+
 			ffid_key_to_indices = self._build_index_map(ffid_values)
 			ffid_unique_keys = list(ffid_key_to_indices.keys())
-			chno_values = f.attributes(self.chno_byte)[:]
 			chno_key_to_indices = self._build_index_map(chno_values)
 			chno_unique_keys = list(chno_key_to_indices.keys())
-			dt_us = int(f.bin[segyio.BinField.Interval])
-			dt = dt_us / 1e3
-			dt_sec = dt_us * 1e-6
-			try:
-				offsets = f.attributes(segyio.TraceField.offset)[:]
-				offsets = np.asarray(offsets, dtype=np.float32)
-				if len(offsets) != f.tracecount:
-					warnings.warn(
-						f'offset length mismatch in {segy_path}',
-					)
-					offsets = np.zeros(f.tracecount, dtype=np.float32)
-			except Exception as e:
-				warnings.warn(
-					f'failed to read offsets from {segy_path}: {e}',
-				)
-				offsets = np.zeros(f.tracecount, dtype=np.float32)
+			cmp_key_to_indices = (
+				self._build_index_map(cmp_values) if (cmp_values is not None) else None
+			)
+			cmp_unique_keys = (
+				list(cmp_key_to_indices.keys())
+				if (cmp_key_to_indices is not None)
+				else None
+			)
+
 			fb = np.load(fb_path)
+
 			self.file_infos.append(
 				dict(
 					path=segy_path,
@@ -112,8 +267,11 @@ class MaskedSegyGather(Dataset):
 					chno_values=chno_values,
 					chno_key_to_indices=chno_key_to_indices,
 					chno_unique_keys=chno_unique_keys,
-					n_samples=f.samples.size,
-					n_traces=f.tracecount,
+					cmp_values=cmp_values,
+					cmp_key_to_indices=cmp_key_to_indices,
+					cmp_unique_keys=cmp_unique_keys,
+					n_samples=n_samples,
+					n_traces=n_traces,
 					dt=dt,
 					dt_sec=dt_sec,
 					segy_obj=f,
@@ -166,10 +324,83 @@ class MaskedSegyGather(Dataset):
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
 			fb = info['fb']
-			key_name = random.choice(['ffid', 'chno'])
+			cmp_available = (
+				bool(info.get('cmp_unique_keys'))
+				and isinstance(info['cmp_unique_keys'], (list, tuple))
+				and len(info['cmp_unique_keys']) > 0
+			)
+
+			# 1) Hydra 指定がある場合は、それを優先して候補化（存在しないキーは自動で落とす）
+			if self.primary_keys:
+				key_candidates = []
+				weight_candidates = []
+				for i, k in enumerate(self.primary_keys):
+					if k not in self._valid_primary_keys:
+						warnings.warn(f'Unknown primary key "{k}" ignored.')
+						continue
+					if k == 'cmp' and not cmp_available:
+						continue
+					key_candidates.append(k)
+					if self.primary_key_weights and i < len(self.primary_key_weights):
+						weight_candidates.append(
+							max(float(self.primary_key_weights[i]), 0.0)
+						)
+					else:
+						weight_candidates.append(1.0)
+				# すべて落ちた場合はデフォルトへフォールバック
+				if not key_candidates:
+					key_candidates = ['ffid', 'chno'] + (
+						['cmp'] if cmp_available else []
+					)
+					weight_candidates = [1.0] * len(key_candidates)
+			else:
+				# 2) 従来デフォルト
+				key_candidates = ['ffid', 'chno'] + (['cmp'] if cmp_available else [])
+				weight_candidates = [1.0] * len(key_candidates)
+
+			# 抽選（重みがあれば使用）
+			if any(w > 0 for w in weight_candidates) and len(weight_candidates) == len(
+				key_candidates
+			):
+				key_name = random.choices(
+					key_candidates, weights=weight_candidates, k=1
+				)[0]
+			else:
+				key_name = random.choice(key_candidates)
 			unique_keys = info[f'{key_name}_unique_keys']
 			key_to_indices = info[f'{key_name}_key_to_indices']
+			if not unique_keys:
+				continue
 			key = random.choice(unique_keys)
+			indices = key_to_indices[key]
+
+			# ---- secondary sort rules ----
+			# 1st=FFID  -> 2nd=CHNO or OFFSET (random)
+			# 1st=CHNO  -> 2nd=FFID or OFFSET (random)
+			# 1st=CMP   -> 2nd=OFFSET
+			try:
+				secondary = None
+				if key_name == 'ffid':
+					secondary = random.choice(('chno', 'offset'))
+				elif key_name == 'chno':
+					secondary = random.choice(('ffid', 'offset'))
+				elif key_name == 'cmp':
+					secondary = 'offset'
+
+				if secondary == 'chno' and info.get('chno_values') is not None:
+					order = np.argsort(info['chno_values'][indices], kind='mergesort')
+					indices = indices[order]
+				elif secondary == 'ffid' and info.get('ffid_values') is not None:
+					order = np.argsort(info['ffid_values'][indices], kind='mergesort')
+					indices = indices[order]
+				elif secondary == 'offset' and info.get('offsets') is not None:
+					order = np.argsort(info['offsets'][indices], kind='mergesort')
+					indices = indices[order]
+			except Exception:
+				# header missing → keep file order
+				pass
+			# ---- end secondary sort ----
+
 			indices = key_to_indices[key]
 			n_total = len(indices)
 			if n_total >= 128:
@@ -179,6 +410,7 @@ class MaskedSegyGather(Dataset):
 			else:
 				selected_indices = indices
 				pad_len = 128 - n_total
+			selected_indices = np.asarray(selected_indices, dtype=np.int64)
 			fb_subset = fb[selected_indices]
 			if pad_len > 0:
 				fb_subset = np.concatenate(
