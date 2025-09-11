@@ -95,6 +95,8 @@ valid_segy_files, valid_fb_files = collect_field_files(
 train_dataset = MaskedSegyGather(
 	train_segy_files,
 	train_fb_files,
+	primary_keys=getattr(cfg.dataset, 'primary_keys', None),
+	primary_key_weights=getattr(cfg.dataset, 'primary_key_weights', None),
 	mask_ratio=cfg.dataset.mask_ratio,
 	mask_mode=cfg.dataset.mask_mode,
 	mask_noise_std=cfg.dataset.mask_noise_std,

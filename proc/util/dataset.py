@@ -26,7 +26,10 @@ class MaskedSegyGather(Dataset):
 		fb_files: list[str],
 		ffid_byte=segyio.TraceField.FieldRecord,
 		chno_byte=segyio.TraceField.TraceNumber,
-		cmp_byte=None,
+		cmp_byte=segyio.TraceField.CDP,
+		primary_keys: tuple[str, ...]
+		| None = None,  # 例: ('ffid','chno','cmp') / ('ffid',)
+		primary_key_weights: tuple[float, ...] | None = None,
 		mask_ratio: float = 0.5,
 		mask_mode: Literal['replace', 'add'] = 'replace',
 		mask_noise_std: float = 1.0,
@@ -58,6 +61,11 @@ class MaskedSegyGather(Dataset):
 		self.ffid_byte = ffid_byte
 		self.chno_byte = chno_byte
 		self.cmp_byte = cmp_byte
+		self.primary_keys = tuple(primary_keys) if primary_keys else None
+		self.primary_key_weights = (
+			tuple(primary_key_weights) if primary_key_weights else None
+		)
+		self._valid_primary_keys = {'ffid', 'chno', 'cmp'}
 		self.mask_ratio = mask_ratio
 		self.mask_mode = mask_mode
 		self.mask_noise_std = mask_noise_std
@@ -97,7 +105,7 @@ class MaskedSegyGather(Dataset):
 					cmp_unique_keys = list(cmp_key_to_indices.keys())
 				except Exception as e:
 					warnings.warn(
-							f"CMP header not available for {segy_path}: {e}",
+						f'CMP header not available for {segy_path}: {e}',
 					)
 					cmp_values = None
 					cmp_key_to_indices = None
@@ -129,9 +137,9 @@ class MaskedSegyGather(Dataset):
 					chno_values=chno_values,
 					chno_key_to_indices=chno_key_to_indices,
 					chno_unique_keys=chno_unique_keys,
-				cmp_values=cmp_values,
-				cmp_key_to_indices=cmp_key_to_indices,
-				cmp_unique_keys=cmp_unique_keys,
+					cmp_values=cmp_values,
+					cmp_key_to_indices=cmp_key_to_indices,
+					cmp_unique_keys=cmp_unique_keys,
 					n_samples=f.samples.size,
 					n_traces=f.tracecount,
 					dt=dt,
@@ -186,14 +194,83 @@ class MaskedSegyGather(Dataset):
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
 			fb = info['fb']
-			key_candidates = ['ffid', 'chno']
-			if info.get('cmp_unique_keys'):
-				if isinstance(info['cmp_unique_keys'], (list, tuple)) and len(info['cmp_unique_keys']) > 0:
-					key_candidates.append('cmp')
-			key_name = random.choice(key_candidates)
+			cmp_available = (
+				bool(info.get('cmp_unique_keys'))
+				and isinstance(info['cmp_unique_keys'], (list, tuple))
+				and len(info['cmp_unique_keys']) > 0
+			)
+
+			# 1) Hydra 指定がある場合は、それを優先して候補化（存在しないキーは自動で落とす）
+			if self.primary_keys:
+				key_candidates = []
+				weight_candidates = []
+				for i, k in enumerate(self.primary_keys):
+					if k not in self._valid_primary_keys:
+						warnings.warn(f'Unknown primary key "{k}" ignored.')
+						continue
+					if k == 'cmp' and not cmp_available:
+						continue
+					key_candidates.append(k)
+					if self.primary_key_weights and i < len(self.primary_key_weights):
+						weight_candidates.append(
+							max(float(self.primary_key_weights[i]), 0.0)
+						)
+					else:
+						weight_candidates.append(1.0)
+				# すべて落ちた場合はデフォルトへフォールバック
+				if not key_candidates:
+					key_candidates = ['ffid', 'chno'] + (
+						['cmp'] if cmp_available else []
+					)
+					weight_candidates = [1.0] * len(key_candidates)
+			else:
+				# 2) 従来デフォルト
+				key_candidates = ['ffid', 'chno'] + (['cmp'] if cmp_available else [])
+				weight_candidates = [1.0] * len(key_candidates)
+
+			# 抽選（重みがあれば使用）
+			if any(w > 0 for w in weight_candidates) and len(weight_candidates) == len(
+				key_candidates
+			):
+				key_name = random.choices(
+					key_candidates, weights=weight_candidates, k=1
+				)[0]
+			else:
+				key_name = random.choice(key_candidates)
 			unique_keys = info[f'{key_name}_unique_keys']
 			key_to_indices = info[f'{key_name}_key_to_indices']
+			if not unique_keys:
+				continue
 			key = random.choice(unique_keys)
+			indices = key_to_indices[key]
+
+			# ---- secondary sort rules ----
+			# 1st=FFID  -> 2nd=CHNO or OFFSET (random)
+			# 1st=CHNO  -> 2nd=FFID or OFFSET (random)
+			# 1st=CMP   -> 2nd=OFFSET
+			try:
+				secondary = None
+				if key_name == 'ffid':
+					secondary = random.choice(('chno', 'offset'))
+				elif key_name == 'chno':
+					secondary = random.choice(('ffid', 'offset'))
+				elif key_name == 'cmp':
+					secondary = 'offset'
+
+				if secondary == 'chno' and info.get('chno_values') is not None:
+					order = np.argsort(info['chno_values'][indices], kind='mergesort')
+					indices = indices[order]
+				elif secondary == 'ffid' and info.get('ffid_values') is not None:
+					order = np.argsort(info['ffid_values'][indices], kind='mergesort')
+					indices = indices[order]
+				elif secondary == 'offset' and info.get('offsets') is not None:
+					order = np.argsort(info['offsets'][indices], kind='mergesort')
+					indices = indices[order]
+			except Exception:
+				# header missing → keep file order
+				pass
+			# ---- end secondary sort ----
+
 			indices = key_to_indices[key]
 			n_total = len(indices)
 			if n_total >= 128:
@@ -203,6 +280,7 @@ class MaskedSegyGather(Dataset):
 			else:
 				selected_indices = indices
 				pad_len = 128 - n_total
+			selected_indices = np.asarray(selected_indices, dtype=np.int64)
 			fb_subset = fb[selected_indices]
 			if pad_len > 0:
 				fb_subset = np.concatenate(
