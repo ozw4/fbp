@@ -97,6 +97,8 @@ train_dataset = MaskedSegyGather(
 	train_fb_files,
 	primary_keys=getattr(cfg.dataset, 'primary_keys', None),
 	primary_key_weights=getattr(cfg.dataset, 'primary_key_weights', None),
+	use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
+	header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
 	mask_ratio=cfg.dataset.mask_ratio,
 	mask_mode=cfg.dataset.mask_mode,
 	mask_noise_std=cfg.dataset.mask_noise_std,
@@ -114,10 +116,13 @@ train_dataset = MaskedSegyGather(
 	augment_freq_roll=cfg.dataset.augment.freq.roll,
 	augment_freq_restandardize=cfg.dataset.augment.freq.restandardize,
 )
+# %%
 if task == 'fb_seg':
 	valid_dataset = MaskedSegyGather(
 		valid_segy_files,
 		valid_fb_files,
+		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
+		header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
 		mask_ratio=0,
 		mask_mode=cfg.dataset.mask_mode,
 		mask_noise_std=0,
@@ -132,6 +137,8 @@ elif task == 'recon':
 	valid_dataset = MaskedSegyGather(
 		valid_segy_files,
 		valid_fb_files,
+		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
+		header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
 		mask_ratio=cfg.dataset.mask_ratio,
 		mask_mode=cfg.dataset.mask_mode,
 		mask_noise_std=cfg.dataset.mask_noise_std,

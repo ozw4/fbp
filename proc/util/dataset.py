@@ -1,6 +1,7 @@
 import random
 import warnings
 from fractions import Fraction
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -17,6 +18,103 @@ from .augment import (
 __all__ = ['MaskedSegyGather']
 
 
+def _load_headers_with_cache(
+	segy_path: str,
+	ffid_byte,
+	chno_byte,
+	cmp_byte=None,
+	cache_dir: str | None = None,
+	rebuild: bool = False,
+):
+	segy_p = Path(segy_path)
+	cache_p = (
+		Path(cache_dir) / (segy_p.name + '.headers.npz')
+		if cache_dir
+		else segy_p.with_suffix(segy_p.suffix + '.headers.npz')
+	)
+
+	# 既存かつ新しければキャッシュを使う
+
+	try:
+		if (
+			(not rebuild)
+			and cache_p.exists()
+			and cache_p.stat().st_mtime >= segy_p.stat().st_mtime
+		):
+			print(
+				rebuild,
+				cache_p.exists(),
+				cache_p.stat().st_mtime >= segy_p.stat().st_mtime,
+			)
+			z = np.load(cache_p, allow_pickle=False)
+			meta = {
+				'ffid_values': z['ffid_values'],
+				'chno_values': z['chno_values'],
+				'cmp_values': (z['cmp_values'] if 'cmp_values' in z.files else None),
+				'offsets': z['offsets'],
+				'dt_us': int(z['dt_us']),
+				'n_traces': int(z['n_traces']),
+				'n_samples': int(z['n_samples']),
+			}
+			print(f'Loaded header cache from {cache_p}')
+			return meta
+	except Exception:
+		# 壊れている等は作り直す
+		pass
+
+	# キャッシュ無 or 不正 → segyio で読み直し
+	with segyio.open(segy_path, 'r', ignore_geometry=True) as f:
+		ffid_values = np.asarray(f.attributes(ffid_byte)[:], dtype=np.int32)
+		chno_values = np.asarray(f.attributes(chno_byte)[:], dtype=np.int32)
+		cmp_values = None
+		if cmp_byte is not None:
+			try:
+				cmp_values = np.asarray(f.attributes(cmp_byte)[:], dtype=np.int32)
+			except Exception:
+				cmp_values = None
+
+		try:
+			offsets = np.asarray(
+				f.attributes(segyio.TraceField.offset)[:], dtype=np.float32
+			)
+			if len(offsets) != f.tracecount:
+				warnings.warn(f'offset length mismatch in {segy_path}')
+				offsets = np.zeros(f.tracecount, dtype=np.float32)
+		except Exception:
+			warnings.warn(f'failed to read offsets from {segy_path}')
+			offsets = np.zeros(f.tracecount, dtype=np.float32)
+
+		dt_us = int(f.bin[segyio.BinField.Interval])
+		meta = dict(
+			ffid_values=ffid_values,
+			chno_values=chno_values,
+			cmp_values=(
+				cmp_values if cmp_values is not None else np.array([], dtype=np.int32)
+			),
+			offsets=offsets,
+			dt_us=dt_us,
+			n_traces=f.tracecount,
+			n_samples=f.samples.size,
+		)
+
+	# 保存（一時ファイル→置換で安全に）
+	try:
+		tmp = cache_p.with_name(cache_p.stem + '.tmp' + cache_p.suffix)
+		np.savez_compressed(tmp, **meta)
+		print(f'Saved header cache to {cache_p}')
+		tmp.replace(cache_p)
+	except Exception:
+		pass
+
+	# 返却整形
+	meta['cmp_values'] = (
+		None
+		if (isinstance(meta['cmp_values'], np.ndarray) and meta['cmp_values'].size == 0)
+		else meta['cmp_values']
+	)
+	return meta
+
+
 class MaskedSegyGather(Dataset):
 	"""Dataset reading SEG-Y gathers with optional augmentation."""
 
@@ -30,6 +128,8 @@ class MaskedSegyGather(Dataset):
 		primary_keys: tuple[str, ...]
 		| None = None,  # 例: ('ffid','chno','cmp') / ('ffid',)
 		primary_key_weights: tuple[float, ...] | None = None,
+		use_header_cache: bool = False,
+		header_cache_dir: str | None = None,
 		mask_ratio: float = 0.5,
 		mask_mode: Literal['replace', 'add'] = 'replace',
 		mask_noise_std: float = 1.0,
@@ -65,6 +165,9 @@ class MaskedSegyGather(Dataset):
 		self.primary_key_weights = (
 			tuple(primary_key_weights) if primary_key_weights else None
 		)
+		self.use_header_cache = use_header_cache
+		self.header_cache_dir = header_cache_dir
+
 		self._valid_primary_keys = {'ffid', 'chno', 'cmp'}
 		self.mask_ratio = mask_ratio
 		self.mask_mode = mask_mode
@@ -87,46 +190,73 @@ class MaskedSegyGather(Dataset):
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
+			print(self.use_header_cache, self.header_cache_dir)
+			if self.use_header_cache:
+				meta = _load_headers_with_cache(
+					segy_path,
+					self.ffid_byte,
+					self.chno_byte,
+					self.cmp_byte,
+					cache_dir=self.header_cache_dir,
+					rebuild=False,  # 必要なら True に
+				)
+				ffid_values = meta['ffid_values']
+				chno_values = meta['chno_values']
+				cmp_values = meta['cmp_values']
+				offsets = meta['offsets']
+				dt_us = meta['dt_us']
+				n_traces = meta['n_traces']
+				n_samples = meta['n_samples']
+				dt = dt_us / 1e3
+				dt_sec = dt_us * 1e-6
+			else:
+				# 従来の読み方（そのまま）
+				f_tmp = segyio.open(segy_path, 'r', ignore_geometry=True)
+				ffid_values = f_tmp.attributes(self.ffid_byte)[:]
+				chno_values = f_tmp.attributes(self.chno_byte)[:]
+				cmp_values = None
+				if self.cmp_byte is not None:
+					try:
+						cmp_values = f_tmp.attributes(self.cmp_byte)[:]
+					except Exception as e:
+						warnings.warn(f'CMP header not available for {segy_path}: {e}')
+						cmp_values = None
+				dt_us = int(f_tmp.bin[segyio.BinField.Interval])
+				dt = dt_us / 1e3
+				dt_sec = dt_us * 1e-6
+				try:
+					offsets = f_tmp.attributes(segyio.TraceField.offset)[:]
+					offsets = np.asarray(offsets, dtype=np.float32)
+					if len(offsets) != f_tmp.tracecount:
+						warnings.warn(f'offset length mismatch in {segy_path}')
+						offsets = np.zeros(f_tmp.tracecount, dtype=np.float32)
+				except Exception as e:
+					warnings.warn(f'failed to read offsets from {segy_path}: {e}')
+					offsets = np.zeros(f_tmp.tracecount, dtype=np.float32)
+				n_traces = f_tmp.tracecount
+				n_samples = f_tmp.samples.size
+				f_tmp.close()
+			# ▲▲ ここまでヘッダ取得 ▲▲
+
+			# 以降は従来どおり：mmap用に開いて保持
 			f = segyio.open(segy_path, 'r', ignore_geometry=True)
 			mmap = f.trace.raw[:]
-			ffid_values = f.attributes(self.ffid_byte)[:]
+
 			ffid_key_to_indices = self._build_index_map(ffid_values)
 			ffid_unique_keys = list(ffid_key_to_indices.keys())
-			chno_values = f.attributes(self.chno_byte)[:]
 			chno_key_to_indices = self._build_index_map(chno_values)
 			chno_unique_keys = list(chno_key_to_indices.keys())
-			cmp_values = None
-			cmp_key_to_indices = None
-			cmp_unique_keys = None
-			if self.cmp_byte is not None:
-				try:
-					cmp_values = f.attributes(self.cmp_byte)[:]
-					cmp_key_to_indices = self._build_index_map(cmp_values)
-					cmp_unique_keys = list(cmp_key_to_indices.keys())
-				except Exception as e:
-					warnings.warn(
-						f'CMP header not available for {segy_path}: {e}',
-					)
-					cmp_values = None
-					cmp_key_to_indices = None
-					cmp_unique_keys = None
-			dt_us = int(f.bin[segyio.BinField.Interval])
-			dt = dt_us / 1e3
-			dt_sec = dt_us * 1e-6
-			try:
-				offsets = f.attributes(segyio.TraceField.offset)[:]
-				offsets = np.asarray(offsets, dtype=np.float32)
-				if len(offsets) != f.tracecount:
-					warnings.warn(
-						f'offset length mismatch in {segy_path}',
-					)
-					offsets = np.zeros(f.tracecount, dtype=np.float32)
-			except Exception as e:
-				warnings.warn(
-					f'failed to read offsets from {segy_path}: {e}',
-				)
-				offsets = np.zeros(f.tracecount, dtype=np.float32)
+			cmp_key_to_indices = (
+				self._build_index_map(cmp_values) if (cmp_values is not None) else None
+			)
+			cmp_unique_keys = (
+				list(cmp_key_to_indices.keys())
+				if (cmp_key_to_indices is not None)
+				else None
+			)
+
 			fb = np.load(fb_path)
+
 			self.file_infos.append(
 				dict(
 					path=segy_path,
@@ -140,8 +270,8 @@ class MaskedSegyGather(Dataset):
 					cmp_values=cmp_values,
 					cmp_key_to_indices=cmp_key_to_indices,
 					cmp_unique_keys=cmp_unique_keys,
-					n_samples=f.samples.size,
-					n_traces=f.tracecount,
+					n_samples=n_samples,
+					n_traces=n_traces,
 					dt=dt,
 					dt_sec=dt_sec,
 					segy_obj=f,
