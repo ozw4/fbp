@@ -41,11 +41,6 @@ def _load_headers_with_cache(
 			and cache_p.exists()
 			and cache_p.stat().st_mtime >= segy_p.stat().st_mtime
 		):
-			print(
-				rebuild,
-				cache_p.exists(),
-				cache_p.stat().st_mtime >= segy_p.stat().st_mtime,
-			)
 			z = np.load(cache_p, allow_pickle=False)
 			meta = {
 				'ffid_values': z['ffid_values'],
@@ -128,6 +123,9 @@ class MaskedSegyGather(Dataset):
 		primary_keys: tuple[str, ...]
 		| None = None,  # 例: ('ffid','chno','cmp') / ('ffid',)
 		primary_key_weights: tuple[float, ...] | None = None,
+		use_superwindow: bool = False,
+		sw_halfspan: int = 0,
+		sw_prob: float = 0.3,
 		use_header_cache: bool = False,
 		header_cache_dir: str | None = None,
 		mask_ratio: float = 0.5,
@@ -165,6 +163,9 @@ class MaskedSegyGather(Dataset):
 		self.primary_key_weights = (
 			tuple(primary_key_weights) if primary_key_weights else None
 		)
+		self.use_superwindow = use_superwindow
+		self.sw_halfspan = int(sw_halfspan)
+		self.sw_prob = sw_prob
 		self.use_header_cache = use_header_cache
 		self.header_cache_dir = header_cache_dir
 
@@ -190,7 +191,6 @@ class MaskedSegyGather(Dataset):
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
-			print(self.use_header_cache, self.header_cache_dir)
 			if self.use_header_cache:
 				meta = _load_headers_with_cache(
 					segy_path,
@@ -321,6 +321,7 @@ class MaskedSegyGather(Dataset):
 
 	def __getitem__(self, _=None):
 		while True:
+			secondary_key = 'none'
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
 			fb = info['fb']
@@ -373,35 +374,84 @@ class MaskedSegyGather(Dataset):
 				continue
 			key = random.choice(unique_keys)
 			indices = key_to_indices[key]
+			# === superwindow: collect neighboring primary keys (no averaging) ===
+			do_super = self.use_superwindow and self.sw_halfspan > 0
+			if do_super and self.sw_prob < 1.0:
+				do_super = random.random() < self.sw_prob
+			if do_super:
+				# Build a window by position in the sorted list of unique primary keys
+				uniq = info.get(f'{key_name}_unique_keys', None)
+				if isinstance(uniq, (list, tuple)):
+					uniq_arr = np.asarray(uniq, dtype=np.int64)
+				else:
+					uniq_arr = np.asarray([], dtype=np.int64)
+
+				if uniq_arr.size > 0:
+					uniq_sorted = np.sort(uniq_arr)
+					center = int(key)
+					pos = np.searchsorted(uniq_sorted, center)
+					lo = max(0, pos - self.sw_halfspan)
+					hi = min(len(uniq_sorted), pos + self.sw_halfspan + 1)
+					win_keys = [int(k) for k in uniq_sorted[lo:hi]]
+				else:
+					win_keys = [int(key)]
+
+				# Concatenate candidate indices from all keys in the window
+				k2map = info[f'{key_name}_key_to_indices']
+				chunks = []
+				for k2 in win_keys:
+					idxs = k2map.get(k2)
+					if idxs is not None and len(idxs) > 0:
+						chunks.append(idxs)
+				if chunks:
+					indices = np.concatenate(chunks).astype(np.int64)
+				else:
+					indices = np.asarray(indices, dtype=np.int64)
+			else:
+				indices = np.asarray(indices, dtype=np.int64)
+			# === end superwindow ===
 
 			# ---- secondary sort rules ----
 			# 1st=FFID  -> 2nd=CHNO or OFFSET (random)
 			# 1st=CHNO  -> 2nd=FFID or OFFSET (random)
 			# 1st=CMP   -> 2nd=OFFSET
 			try:
-				secondary = None
+				prim_vals = info[f'{key_name}_values'][indices]
+
+				# secondary を規則どおりに決める（FFID/CHNOはランダム分岐、CMPは固定）
 				if key_name == 'ffid':
 					secondary = random.choice(('chno', 'offset'))
 				elif key_name == 'chno':
 					secondary = random.choice(('ffid', 'offset'))
-				elif key_name == 'cmp':
+				else:  # key_name == 'cmp'
 					secondary = 'offset'
 
-				if secondary == 'chno' and info.get('chno_values') is not None:
-					order = np.argsort(info['chno_values'][indices], kind='mergesort')
-					indices = indices[order]
-				elif secondary == 'ffid' and info.get('ffid_values') is not None:
-					order = np.argsort(info['ffid_values'][indices], kind='mergesort')
-					indices = indices[order]
-				elif secondary == 'offset' and info.get('offsets') is not None:
-					order = np.argsort(info['offsets'][indices], kind='mergesort')
-					indices = indices[order]
-			except Exception:
-				# header missing → keep file order
-				pass
+				secondary_key = secondary
+
+				# secondary の値を取得
+				if secondary == 'chno':
+					sec_vals = info['chno_values'][indices]
+				elif secondary == 'ffid':
+					sec_vals = info['ffid_values'][indices]
+				else:  # 'offset'
+					sec_vals = info['offsets'][indices]
+
+				# ★ secondary優先（列優先）にする安定ソート：
+				# 先に primary、次に secondary を "mergesort"（安定）でかける
+				o = np.argsort(prim_vals, kind='mergesort')
+				indices = indices[o]
+				sec_vals = sec_vals[o]
+
+				o2 = np.argsort(sec_vals, kind='mergesort')
+				indices = indices[o2]
+			except Exception as e:
+				print(f'Warning: secondary sort failed: {e}')
+				print(f'  key_name={key_name}, indices.shape={indices.shape}')
+				print(f'  prim_vals={prim_vals if "prim_vals" in locals() else "N/A"}')
+				print(f'  sec_vals={sec_vals if "sec_vals" in locals() else "N/A"}')
+				print(f'  {info["path"]}')
 			# ---- end secondary sort ----
 
-			indices = key_to_indices[key]
 			n_total = len(indices)
 			if n_total >= 128:
 				start_idx = random.randint(0, n_total - 128)
@@ -411,13 +461,27 @@ class MaskedSegyGather(Dataset):
 				selected_indices = indices
 				pad_len = 128 - n_total
 			selected_indices = np.asarray(selected_indices, dtype=np.int64)
+
+			# 例: key_name が 'ffid' のとき FFID の配列
+			prim_vals_sel = info[f'{key_name}_values'][selected_indices].astype(
+				np.int64, copy=False
+			)
+
+			# ラベル順（昇順）に整えた “集合” ＝ これ自体が label→値 の対応表になる
+			primary_label_values = np.unique(
+				prim_vals_sel
+			)  # shape: [K], 例: [1201,1203,1204]
+
+			# 文字列の集合（ログ/CSV用に便利、可変長でも DataLoader が壊れない）
+			primary_unique_str = ','.join(map(str, primary_label_values.tolist()))
+
 			fb_subset = fb[selected_indices]
 			if pad_len > 0:
 				fb_subset = np.concatenate(
 					[fb_subset, np.zeros(pad_len, dtype=fb_subset.dtype)]
 				)
 			offsets_full = info['offsets']
-			off_subset = offsets_full[selected_indices].astype(np.float32, copy=False)
+			off_subset = offsets_full[selected_indices].astype(np.float32)
 			if pad_len > 0:
 				off_subset = np.concatenate(
 					[off_subset, np.zeros(pad_len, dtype=np.float32)]
@@ -425,7 +489,7 @@ class MaskedSegyGather(Dataset):
 			pick_ratio = np.count_nonzero(fb_subset > 0) / len(fb_subset)
 			if pick_ratio >= self.pick_ratio:
 				break
-		x = mmap[selected_indices].astype(np.float32, copy=False)
+		x = mmap[selected_indices].astype(np.float32)
 		if pad_len > 0:
 			pad_tr = np.zeros((pad_len, x.shape[1]), dtype=np.float32)
 			x = np.concatenate([x, pad_tr], axis=0)
@@ -514,8 +578,10 @@ class MaskedSegyGather(Dataset):
 				'dt_sec': torch.tensor(dt_eff_sec, dtype=torch.float32),
 				'mask_indices': mask_idx,
 				'key_name': key_name,
+				'secondary_key': secondary_key,
 				'indices': selected_indices,
 				'file_path': info['path'],
+				'primary_unique': primary_unique_str,  # "1201,1203,1204"
 			}
 			if self.target_mode == 'fb_seg':
 				sample['target'] = target_t

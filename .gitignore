@@ -27,7 +27,7 @@ Thumbs.db
 *.segy
 *.png
 *.pth
-
+*.csv
 data/
 result/
 tmp_code/
