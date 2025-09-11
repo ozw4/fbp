@@ -128,6 +128,8 @@ class MaskedSegyGather(Dataset):
 		primary_keys: tuple[str, ...]
 		| None = None,  # 例: ('ffid','chno','cmp') / ('ffid',)
 		primary_key_weights: tuple[float, ...] | None = None,
+		use_superwindow: bool = False,
+		sw_halfspan: int = 0,
 		use_header_cache: bool = False,
 		header_cache_dir: str | None = None,
 		mask_ratio: float = 0.5,
@@ -165,6 +167,8 @@ class MaskedSegyGather(Dataset):
 		self.primary_key_weights = (
 			tuple(primary_key_weights) if primary_key_weights else None
 		)
+		self.use_superwindow = use_superwindow
+		self.sw_halfspan = int(sw_halfspan)
 		self.use_header_cache = use_header_cache
 		self.header_cache_dir = header_cache_dir
 
@@ -373,6 +377,39 @@ class MaskedSegyGather(Dataset):
 				continue
 			key = random.choice(unique_keys)
 			indices = key_to_indices[key]
+			# === superwindow: collect neighboring primary keys (no averaging) ===
+			if self.use_superwindow and self.sw_halfspan > 0:
+				# Build a window by position in the sorted list of unique primary keys
+				uniq = info.get(f'{key_name}_unique_keys', None)
+				if isinstance(uniq, (list, tuple)):
+					uniq_arr = np.asarray(uniq, dtype=np.int64)
+				else:
+					uniq_arr = np.asarray([], dtype=np.int64)
+
+				if uniq_arr.size > 0:
+					uniq_sorted = np.sort(uniq_arr)
+					center = int(key)
+					pos = np.searchsorted(uniq_sorted, center)
+					lo = max(0, pos - self.sw_halfspan)
+					hi = min(len(uniq_sorted), pos + self.sw_halfspan + 1)
+					win_keys = [int(k) for k in uniq_sorted[lo:hi]]
+				else:
+					win_keys = [int(key)]
+
+				# Concatenate candidate indices from all keys in the window
+				k2map = info[f'{key_name}_key_to_indices']
+				chunks = []
+				for k2 in win_keys:
+					idxs = k2map.get(k2)
+					if idxs is not None and len(idxs) > 0:
+						chunks.append(idxs)
+				if chunks:
+					indices = np.concatenate(chunks).astype(np.int64, copy=False)
+				else:
+					indices = np.asarray(indices, dtype=np.int64, copy=False)
+			else:
+				indices = np.asarray(indices, dtype=np.int64, copy=False)
+			# === end superwindow ===
 
 			# ---- secondary sort rules ----
 			# 1st=FFID  -> 2nd=CHNO or OFFSET (random)
@@ -401,7 +438,8 @@ class MaskedSegyGather(Dataset):
 				pass
 			# ---- end secondary sort ----
 
-			indices = key_to_indices[key]
+			if not (self.use_superwindow and self.sw_halfspan > 0):
+				indices = key_to_indices[key]
 			n_total = len(indices)
 			if n_total >= 128:
 				start_idx = random.randint(0, n_total - 128)
