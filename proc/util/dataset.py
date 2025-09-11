@@ -110,6 +110,20 @@ def _load_headers_with_cache(
 	return meta
 
 
+def _build_centroids(key_to_indices, X, Y):
+	if key_to_indices is None or X is None or Y is None:
+		return None
+	out = {}
+	for k, idxs in key_to_indices.items():
+		if idxs is None or len(idxs) == 0:
+			continue
+		# robust representative (median)
+		mx = float(np.median(X[idxs]))
+		my = float(np.median(Y[idxs]))
+		out[int(k)] = (mx, my)
+	return out
+
+
 class MaskedSegyGather(Dataset):
 	"""Dataset reading SEG-Y gathers with optional augmentation."""
 
@@ -121,7 +135,7 @@ class MaskedSegyGather(Dataset):
 		chno_byte=segyio.TraceField.TraceNumber,
 		cmp_byte=segyio.TraceField.CDP,
 		primary_keys: tuple[str, ...]
-		| None = None,  # 例: ('ffid','chno','cmp') / ('ffid',)
+		| None = None,	# 例: ('ffid','chno','cmp') / ('ffid',)
 		primary_key_weights: tuple[float, ...] | None = None,
 		use_superwindow: bool = False,
 		sw_halfspan: int = 0,
@@ -198,7 +212,7 @@ class MaskedSegyGather(Dataset):
 					self.chno_byte,
 					self.cmp_byte,
 					cache_dir=self.header_cache_dir,
-					rebuild=False,  # 必要なら True に
+					rebuild=False,	# 必要なら True に
 				)
 				ffid_values = meta['ffid_values']
 				chno_values = meta['chno_values']
@@ -255,6 +269,81 @@ class MaskedSegyGather(Dataset):
 				else None
 			)
 
+			# ---- distance centroids (FFID by source, CHNO by receiver) ----
+			srcx = srcy = None
+			grx = gry = None
+			try:
+				srcx = np.asarray(
+					f.attributes(segyio.TraceField.SourceX)[:], dtype=np.float64
+				)
+				srcy = np.asarray(
+					f.attributes(segyio.TraceField.SourceY)[:], dtype=np.float64
+				)
+			except Exception as e:
+				warnings.warn(
+					f'failed to read source coordinates from {segy_path}: {e}'
+				)
+				srcx = srcy = None
+			try:
+				grx = np.asarray(
+					f.attributes(segyio.TraceField.GroupX)[:], dtype=np.float64
+				)
+				gry = np.asarray(
+					f.attributes(segyio.TraceField.GroupY)[:], dtype=np.float64
+				)
+			except Exception as e:
+				warnings.warn(
+					f'failed to read receiver coordinates from {segy_path}: {e}'
+				)
+				grx = gry = None
+
+			if (
+				srcx is not None
+				and srcy is not None
+				and grx is not None
+				and gry is not None
+			):
+				try:
+					scal = np.asarray(
+						f.attributes(
+							segyio.TraceField.SourceGroupScalar
+						)[:],
+						dtype=np.float64,
+					)
+					scal_eff = np.where(
+						scal == 0.0,
+						1.0,
+						np.where(scal > 0.0, scal, 1.0 / np.abs(scal)),
+					)
+					if scal_eff.size == 1:
+						srcx *= scal_eff
+						srcy *= scal_eff
+						grx *= scal_eff
+						gry *= scal_eff
+					elif scal_eff.size == srcx.size:
+						srcx *= scal_eff
+						srcy *= scal_eff
+						grx *= scal_eff
+						gry *= scal_eff
+					else:
+						warnings.warn(
+							f'SourceGroupScalar size mismatch in {segy_path}'
+						)
+						srcx = srcy = grx = gry = None
+				except Exception as e:
+					warnings.warn(
+						f'failed to read SourceGroupScalar from {segy_path}: {e}'
+					)
+					srcx = srcy = grx = gry = None
+
+			ffid_centroids = _build_centroids(
+				ffid_key_to_indices, srcx, srcy
+			)
+			chno_centroids = _build_centroids(
+				chno_key_to_indices, grx, gry
+			)
+			# ---------------------------------------------------------------
+
 			fb = np.load(fb_path)
 
 			self.file_infos.append(
@@ -277,6 +366,8 @@ class MaskedSegyGather(Dataset):
 					segy_obj=f,
 					fb=fb,
 					offsets=offsets,
+					ffid_centroids=ffid_centroids,
+					chno_centroids=chno_centroids,
 				)
 			)
 
@@ -375,40 +466,166 @@ class MaskedSegyGather(Dataset):
 			key = random.choice(unique_keys)
 			indices = key_to_indices[key]
 			# === superwindow: collect neighboring primary keys (no averaging) ===
-			do_super = self.use_superwindow and self.sw_halfspan > 0
-			if do_super and self.sw_prob < 1.0:
-				do_super = random.random() < self.sw_prob
-			if do_super:
-				# Build a window by position in the sorted list of unique primary keys
-				uniq = info.get(f'{key_name}_unique_keys', None)
-				if isinstance(uniq, (list, tuple)):
-					uniq_arr = np.asarray(uniq, dtype=np.int64)
-				else:
-					uniq_arr = np.asarray([], dtype=np.int64)
+			if self.use_superwindow and self.sw_halfspan > 0:
+				apply_super = True
+				if hasattr(self, 'sw_prob') and float(self.sw_prob) < 1.0:
+					if random.random() >= float(self.sw_prob):
+						apply_super = False
 
-				if uniq_arr.size > 0:
-					uniq_sorted = np.sort(uniq_arr)
-					center = int(key)
-					pos = np.searchsorted(uniq_sorted, center)
-					lo = max(0, pos - self.sw_halfspan)
-					hi = min(len(uniq_sorted), pos + self.sw_halfspan + 1)
-					win_keys = [int(k) for k in uniq_sorted[lo:hi]]
-				else:
-					win_keys = [int(key)]
+				if apply_super:
+					K = 1 + 2 * int(self.sw_halfspan)
 
-				# Concatenate candidate indices from all keys in the window
-				k2map = info[f'{key_name}_key_to_indices']
-				chunks = []
-				for k2 in win_keys:
-					idxs = k2map.get(k2)
-					if idxs is not None and len(idxs) > 0:
-						chunks.append(idxs)
-				if chunks:
-					indices = np.concatenate(chunks).astype(np.int64)
+					if key_name == 'ffid':
+						cent = info.get('ffid_centroids', None)
+						if isinstance(cent, dict) and int(key) in cent:
+							keys = np.fromiter(cent.keys(), dtype=np.int64)
+							coords = np.array(
+								[cent[int(k)] for k in keys],
+								dtype=np.float64,
+							)
+							cx, cy = cent[int(key)]
+							d = np.hypot(coords[:, 0] - cx, coords[:, 1] - cy)
+							order = np.argsort(d)
+							sel_keys = keys[order][:K]
+							k2map = info['ffid_key_to_indices']
+							chunks = []
+							for k2 in sel_keys:
+								idxs = k2map.get(int(k2))
+								if idxs is not None and len(idxs) > 0:
+									chunks.append(idxs)
+							if chunks:
+								indices = np.concatenate(chunks).astype(
+									np.int64, copy=False
+								)
+							else:
+								indices = np.asarray(
+									indices, dtype=np.int64, copy=False
+								)
+						else:
+							# fallback: existing index-based window
+							uniq = info.get(f'{key_name}_unique_keys', None)
+							if isinstance(uniq, (list, tuple)):
+								uniq_arr = np.asarray(uniq, dtype=np.int64)
+							else:
+								uniq_arr = np.asarray([], dtype=np.int64)
+
+							if uniq_arr.size > 0:
+								uniq_sorted = np.sort(uniq_arr)
+								center = int(key)
+								pos = np.searchsorted(uniq_sorted, center)
+								lo = max(0, pos - self.sw_halfspan)
+								hi = min(
+									len(uniq_sorted),
+									pos + self.sw_halfspan + 1,
+								)
+								win_keys = [int(k) for k in uniq_sorted[lo:hi]]
+							else:
+								win_keys = [int(key)]
+
+							k2map = info[f'{key_name}_key_to_indices']
+							chunks = []
+							for k2 in win_keys:
+								idxs = k2map.get(k2)
+								if idxs is not None and len(idxs) > 0:
+									chunks.append(idxs)
+							if chunks:
+								indices = np.concatenate(chunks).astype(np.int64)
+							else:
+								indices = np.asarray(indices, dtype=np.int64)
+
+					elif key_name == 'chno':
+						cent = info.get('chno_centroids', None)
+						if isinstance(cent, dict) and int(key) in cent:
+							keys = np.fromiter(cent.keys(), dtype=np.int64)
+							coords = np.array(
+								[cent[int(k)] for k in keys],
+								dtype=np.float64,
+							)
+							cx, cy = cent[int(key)]
+							d = np.hypot(coords[:, 0] - cx, coords[:, 1] - cy)
+							order = np.argsort(d)
+							sel_keys = keys[order][:K]
+							k2map = info['chno_key_to_indices']
+							chunks = []
+							for k2 in sel_keys:
+								idxs = k2map.get(int(k2))
+								if idxs is not None and len(idxs) > 0:
+									chunks.append(idxs)
+							if chunks:
+								indices = np.concatenate(chunks).astype(
+									np.int64, copy=False
+								)
+							else:
+								indices = np.asarray(
+									indices, dtype=np.int64, copy=False
+								)
+						else:
+							# fallback: existing index-based window
+							uniq = info.get(f'{key_name}_unique_keys', None)
+							if isinstance(uniq, (list, tuple)):
+								uniq_arr = np.asarray(uniq, dtype=np.int64)
+							else:
+								uniq_arr = np.asarray([], dtype=np.int64)
+
+							if uniq_arr.size > 0:
+								uniq_sorted = np.sort(uniq_arr)
+								center = int(key)
+								pos = np.searchsorted(uniq_sorted, center)
+								lo = max(0, pos - self.sw_halfspan)
+								hi = min(
+									len(uniq_sorted),
+									pos + self.sw_halfspan + 1,
+								)
+								win_keys = [int(k) for k in uniq_sorted[lo:hi]]
+							else:
+								win_keys = [int(key)]
+
+							k2map = info[f'{key_name}_key_to_indices']
+							chunks = []
+							for k2 in win_keys:
+								idxs = k2map.get(k2)
+								if idxs is not None and len(idxs) > 0:
+									chunks.append(idxs)
+							if chunks:
+								indices = np.concatenate(chunks).astype(np.int64)
+							else:
+								indices = np.asarray(indices, dtype=np.int64)
+
+					else:
+						# CMP or others: keep your existing index-based window
+						uniq = info.get(f'{key_name}_unique_keys', None)
+						if isinstance(uniq, (list, tuple)):
+							uniq_arr = np.asarray(uniq, dtype=np.int64)
+						else:
+							uniq_arr = np.asarray([], dtype=np.int64)
+
+						if uniq_arr.size > 0:
+							uniq_sorted = np.sort(uniq_arr)
+							center = int(key)
+							pos = np.searchsorted(uniq_sorted, center)
+							lo = max(0, pos - self.sw_halfspan)
+							hi = min(
+								len(uniq_sorted),
+								pos + self.sw_halfspan + 1,
+							)
+							win_keys = [int(k) for k in uniq_sorted[lo:hi]]
+						else:
+							win_keys = [int(key)]
+
+						k2map = info[f'{key_name}_key_to_indices']
+						chunks = []
+						for k2 in win_keys:
+							idxs = k2map.get(k2)
+							if idxs is not None and len(idxs) > 0:
+								chunks.append(idxs)
+						if chunks:
+							indices = np.concatenate(chunks).astype(np.int64)
+						else:
+							indices = np.asarray(indices, dtype=np.int64)
 				else:
-					indices = np.asarray(indices, dtype=np.int64)
+					indices = np.asarray(indices, dtype=np.int64, copy=False)
 			else:
-				indices = np.asarray(indices, dtype=np.int64)
+				indices = np.asarray(indices, dtype=np.int64, copy=False)
 			# === end superwindow ===
 
 			# ---- secondary sort rules ----
