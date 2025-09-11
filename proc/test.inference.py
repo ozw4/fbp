@@ -15,11 +15,11 @@ from torch.utils.data import DataLoader, Dataset, SequentialSampler
 
 from proc.util import MaskedSegyGather, segy_collate, worker_init_fn
 from proc.util.features import make_offset_channel
-from proc.util.model_utils import inflate_input_convs_to_2ch
 
 # loss.py からロバスト回帰だけ借ります
 from proc.util.loss import gaussian_prior_from_trend, robust_linear_trend_sections
 from proc.util.model import NetAE, adjust_first_conv_padding
+from proc.util.model_utils import inflate_input_convs_to_2ch
 
 
 @torch.no_grad()
@@ -81,16 +81,20 @@ def debug_prior_visual(
 			if section_counter >= max_sections:
 				break
 
-                        x_masked, x_tgt, mask_or_none, meta = batch
-                        x_masked = x_masked.to(device, non_blocking=True)
-                        x_in = x_masked
-                        if getattr(cfg, 'model', None) and getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
-                                offs_ch = make_offset_channel(x_masked, meta['offsets'])
-                                x_in = torch.cat([x_masked, offs_ch], dim=1)
-                        logits = model(x_in)  # (B,1,H,W) or (B,2,H,W)
-                        logit = logits.squeeze(1)  # (B,H,W)
-                        prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
-                        B, H, W = prob.shape
+			x_masked, x_tgt, mask_or_none, meta = batch
+			x_masked = x_masked.to(device, non_blocking=True)
+			x_in = x_masked
+			if (
+				getattr(cfg, 'model', None)
+				and getattr(cfg.model, 'use_offset_input', False)
+				and ('offsets' in meta)
+			):
+				offs_ch = make_offset_channel(x_masked, meta['offsets'])
+				x_in = torch.cat([x_masked, offs_ch], dim=1)
+			logits = model(x_in)  # (B,1,H,W) or (B,2,H,W)
+			logit = logits.squeeze(1)  # (B,H,W)
+			prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
+			B, H, W = prob.shape
 			t_idx = torch.arange(W, device=prob.device, dtype=prob.dtype).view(1, 1, W)
 
 			dt_sec = meta['dt_sec'].to(prob).view(B, 1)  # (B,1)
@@ -360,31 +364,35 @@ if 'caformer' in cfg.backbone:
 
 # ---- 6) 重みの読み込み（EMA優先, なければ通常）----
 if getattr(cfg, 'resume', None):
-        ckpt = torch.load(cfg.resume, map_location='cpu', weights_only=False)
-        state = ckpt.get('model_ema', ckpt.get('model', ckpt))
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(
-                f'[load] missing={len(missing)} unexpected={len(unexpected)} from {cfg.resume}'
-        )
+	ckpt = torch.load(cfg.resume, map_location='cpu', weights_only=False)
+	state = ckpt.get('model_ema', ckpt.get('model', ckpt))
+	missing, unexpected = model.load_state_dict(state, strict=False)
+	print(
+		f'[load] missing={len(missing)} unexpected={len(unexpected)} from {cfg.resume}'
+	)
 else:
-        print('[load] cfg.resume が未設定のため、ランダム初期化のまま')
+	print('[load] cfg.resume が未設定のため、ランダム初期化のまま')
 
 if getattr(cfg, 'model', None) and getattr(cfg.model, 'use_offset_input', False):
-        inflate_input_convs_to_2ch(model, verbose=True, init_mode="duplicate")
+	inflate_input_convs_to_2ch(model, verbose=True, init_mode='duplicate')
 
 model.eval()
 
 # ---- 7) 動作確認（任意）：1バッチ取り出してデバイスに載せる ----
 if len(valid_dataset) > 0:
-        x_masked, x_tgt, mask_or_none, meta = next(iter(val_loader))
-        x_masked = x_masked.to(device, non_blocking=True)
-        x_in = x_masked
-        if getattr(cfg, 'model', None) and getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
-                offs_ch = make_offset_channel(x_masked, meta['offsets'])
-                x_in = torch.cat([x_masked, offs_ch], dim=1)
-        with torch.no_grad():
-                _ = model(x_in)
-        print('[check] val_loader 取り回し & モデル推論 OK')
+	x_masked, x_tgt, mask_or_none, meta = next(iter(val_loader))
+	x_masked = x_masked.to(device, non_blocking=True)
+	x_in = x_masked
+	if (
+		getattr(cfg, 'model', None)
+		and getattr(cfg.model, 'use_offset_input', False)
+		and ('offsets' in meta)
+	):
+		offs_ch = make_offset_channel(x_masked, meta['offsets'])
+		x_in = torch.cat([x_masked, offs_ch], dim=1)
+	with torch.no_grad():
+		_ = model(x_in)
+	print('[check] val_loader 取り回し & モデル推論 OK')
 else:
 	print('[check] valid_dataset が空です')
 
@@ -488,7 +496,7 @@ missing, unexpected = model.load_state_dict(state, strict=False)
 print(f'[load] missing={len(missing)} unexpected={len(unexpected)} from {cfg.resume}')
 
 if getattr(cfg, 'model', None) and getattr(cfg.model, 'use_offset_input', False):
-        inflate_input_convs_to_2ch(model, verbose=True, init_mode="duplicate")
+	inflate_input_convs_to_2ch(model, verbose=True, init_mode='duplicate')
 
 model.eval()
 
