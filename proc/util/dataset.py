@@ -404,11 +404,11 @@ class MaskedSegyGather(Dataset):
 					if idxs is not None and len(idxs) > 0:
 						chunks.append(idxs)
 				if chunks:
-					indices = np.concatenate(chunks).astype(np.int64, copy=False)
+					indices = np.concatenate(chunks).astype(np.int64)
 				else:
-					indices = np.asarray(indices, dtype=np.int64, copy=False)
+					indices = np.asarray(indices, dtype=np.int64)
 			else:
-				indices = np.asarray(indices, dtype=np.int64, copy=False)
+				indices = np.asarray(indices, dtype=np.int64)
 			# === end superwindow ===
 
 			# ---- secondary sort rules ----
@@ -416,30 +416,40 @@ class MaskedSegyGather(Dataset):
 			# 1st=CHNO  -> 2nd=FFID or OFFSET (random)
 			# 1st=CMP   -> 2nd=OFFSET
 			try:
-				secondary = None
+				prim_vals = info[f'{key_name}_values'][indices]
+
+				# secondary を規則どおりに決める（FFID/CHNOはランダム分岐、CMPは固定）
 				if key_name == 'ffid':
 					secondary = random.choice(('chno', 'offset'))
 				elif key_name == 'chno':
 					secondary = random.choice(('ffid', 'offset'))
-				elif key_name == 'cmp':
+				else:  # key_name == 'cmp'
 					secondary = 'offset'
 
-				if secondary == 'chno' and info.get('chno_values') is not None:
-					order = np.argsort(info['chno_values'][indices], kind='mergesort')
-					indices = indices[order]
-				elif secondary == 'ffid' and info.get('ffid_values') is not None:
-					order = np.argsort(info['ffid_values'][indices], kind='mergesort')
-					indices = indices[order]
-				elif secondary == 'offset' and info.get('offsets') is not None:
-					order = np.argsort(info['offsets'][indices], kind='mergesort')
-					indices = indices[order]
-			except Exception:
-				# header missing → keep file order
-				pass
+				# secondary の値を取得
+				if secondary == 'chno':
+					sec_vals = info['chno_values'][indices]
+				elif secondary == 'ffid':
+					sec_vals = info['ffid_values'][indices]
+				else:  # 'offset'
+					sec_vals = info['offsets'][indices]
+
+				# ★ secondary優先（列優先）にする安定ソート：
+				# 先に primary、次に secondary を "mergesort"（安定）でかける
+				o = np.argsort(prim_vals, kind='mergesort')
+				indices = indices[o]
+				sec_vals = sec_vals[o]
+
+				o2 = np.argsort(sec_vals, kind='mergesort')
+				indices = indices[o2]
+			except Exception as e:
+				print(f'Warning: secondary sort failed: {e}')
+				print(f'  key_name={key_name}, indices.shape={indices.shape}')
+				print(f'  prim_vals={prim_vals if "prim_vals" in locals() else "N/A"}')
+				print(f'  sec_vals={sec_vals if "sec_vals" in locals() else "N/A"}')
+				print(f'  {info["path"]}')
 			# ---- end secondary sort ----
 
-			if not (self.use_superwindow and self.sw_halfspan > 0):
-				indices = key_to_indices[key]
 			n_total = len(indices)
 			if n_total >= 128:
 				start_idx = random.randint(0, n_total - 128)
@@ -455,7 +465,7 @@ class MaskedSegyGather(Dataset):
 					[fb_subset, np.zeros(pad_len, dtype=fb_subset.dtype)]
 				)
 			offsets_full = info['offsets']
-			off_subset = offsets_full[selected_indices].astype(np.float32, copy=False)
+			off_subset = offsets_full[selected_indices].astype(np.float32)
 			if pad_len > 0:
 				off_subset = np.concatenate(
 					[off_subset, np.zeros(pad_len, dtype=np.float32)]
@@ -463,7 +473,7 @@ class MaskedSegyGather(Dataset):
 			pick_ratio = np.count_nonzero(fb_subset > 0) / len(fb_subset)
 			if pick_ratio >= self.pick_ratio:
 				break
-		x = mmap[selected_indices].astype(np.float32, copy=False)
+		x = mmap[selected_indices].astype(np.float32)
 		if pad_len > 0:
 			pad_tr = np.zeros((pad_len, x.shape[1]), dtype=np.float32)
 			x = np.concatenate([x, pad_tr], axis=0)
