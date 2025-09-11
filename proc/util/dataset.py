@@ -41,11 +41,6 @@ def _load_headers_with_cache(
 			and cache_p.exists()
 			and cache_p.stat().st_mtime >= segy_p.stat().st_mtime
 		):
-			print(
-				rebuild,
-				cache_p.exists(),
-				cache_p.stat().st_mtime >= segy_p.stat().st_mtime,
-			)
 			z = np.load(cache_p, allow_pickle=False)
 			meta = {
 				'ffid_values': z['ffid_values'],
@@ -196,7 +191,6 @@ class MaskedSegyGather(Dataset):
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
-			print(self.use_header_cache, self.header_cache_dir)
 			if self.use_header_cache:
 				meta = _load_headers_with_cache(
 					segy_path,
