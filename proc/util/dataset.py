@@ -26,6 +26,7 @@ class MaskedSegyGather(Dataset):
 		fb_files: list[str],
 		ffid_byte=segyio.TraceField.FieldRecord,
 		chno_byte=segyio.TraceField.TraceNumber,
+		cmp_byte=None,
 		mask_ratio: float = 0.5,
 		mask_mode: Literal['replace', 'add'] = 'replace',
 		mask_noise_std: float = 1.0,
@@ -56,6 +57,7 @@ class MaskedSegyGather(Dataset):
 		self.fb_files = fb_files
 		self.ffid_byte = ffid_byte
 		self.chno_byte = chno_byte
+		self.cmp_byte = cmp_byte
 		self.mask_ratio = mask_ratio
 		self.mask_mode = mask_mode
 		self.mask_noise_std = mask_noise_std
@@ -85,6 +87,21 @@ class MaskedSegyGather(Dataset):
 			chno_values = f.attributes(self.chno_byte)[:]
 			chno_key_to_indices = self._build_index_map(chno_values)
 			chno_unique_keys = list(chno_key_to_indices.keys())
+			cmp_values = None
+			cmp_key_to_indices = None
+			cmp_unique_keys = None
+			if self.cmp_byte is not None:
+				try:
+					cmp_values = f.attributes(self.cmp_byte)[:]
+					cmp_key_to_indices = self._build_index_map(cmp_values)
+					cmp_unique_keys = list(cmp_key_to_indices.keys())
+				except Exception as e:
+					warnings.warn(
+							f"CMP header not available for {segy_path}: {e}",
+					)
+					cmp_values = None
+					cmp_key_to_indices = None
+					cmp_unique_keys = None
 			dt_us = int(f.bin[segyio.BinField.Interval])
 			dt = dt_us / 1e3
 			dt_sec = dt_us * 1e-6
@@ -112,6 +129,9 @@ class MaskedSegyGather(Dataset):
 					chno_values=chno_values,
 					chno_key_to_indices=chno_key_to_indices,
 					chno_unique_keys=chno_unique_keys,
+				cmp_values=cmp_values,
+				cmp_key_to_indices=cmp_key_to_indices,
+				cmp_unique_keys=cmp_unique_keys,
 					n_samples=f.samples.size,
 					n_traces=f.tracecount,
 					dt=dt,
@@ -166,7 +186,11 @@ class MaskedSegyGather(Dataset):
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
 			fb = info['fb']
-			key_name = random.choice(['ffid', 'chno'])
+			key_candidates = ['ffid', 'chno']
+			if info.get('cmp_unique_keys'):
+				if isinstance(info['cmp_unique_keys'], (list, tuple)) and len(info['cmp_unique_keys']) > 0:
+					key_candidates.append('cmp')
+			key_name = random.choice(key_candidates)
 			unique_keys = info[f'{key_name}_unique_keys']
 			key_to_indices = info[f'{key_name}_key_to_indices']
 			key = random.choice(unique_keys)
