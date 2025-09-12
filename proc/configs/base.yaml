@@ -26,7 +26,7 @@ use_ema: True
 use_amp: True
 ema_decay: 0.99
 
-device: 'cuda'
+device: 'cuda:1'
 
 # Training task
 task: fb_seg  # recon | fb_seg
@@ -44,7 +44,7 @@ val_steps: 50
 epoch_block: 20
 num_block: 10
 print_freq: 100
-resume:   /workspace/proc/result/recon/train_field_list_edgenext_small/checkpoint.pth
+resume:  /workspace/proc/result/recon/train_field_list_edgenext_small/checkpoint.pth
 start_epoch: 0
 
 # Freeze schedule
@@ -84,7 +84,7 @@ dataset:
   use_superwindow: true        # true で近傍 primary を結合（非平均）
   sw_halfspan: 1                # ±いくつ結合するか（0で無効）
   sw_prob: 0.3
-  use_header_cache: true         # 既定false。trueで .npz を利用
+  use_header_cache: true         # 既定false。trueで .npz を利用s
   header_cache_dir: null         # nullなら SEG-Y と同じ場所に作成
   mask_ratio: 0
   mask_mode: replace         # replace | add
@@ -92,6 +92,12 @@ dataset:
   target_mode: ${task}
   label_sigma: 5.0
   flip: True
+  # --- First-Break Lateral Continuity (FBLC) filter ---
+  reject_fblc: True          # true で粗い（ギザギザな）初動のサンプルを棄却
+  fblc_percentile: 95.0       # 隣接 |Δt| のパーセンタイル（%）
+  fblc_thresh_ms: 20.0         # 上記パーセンタイルの閾値 [ms]
+  fblc_min_pairs: 16          # 有効隣接ペアの最小本数（少なすぎると判定しない）
+  fblc_apply_on: super_only         # 'any' | 'super_only'
   augment:
     time:
       prob: 0
