@@ -104,6 +104,11 @@ def _build_ds_kwargs_from_cfg(cfg: Any) -> dict[str, Any]:
 		target_mode=g('target_mode', 'fb_seg'),
 		label_sigma=float(g('label_sigma', 1.0)),
 		# ffid_byte / chno_byte / cmp_byte は dataset 側のデフォルトに任せる
+		reject_fblc=bool(g('reject_fblc', False)),
+		fblc_percentile=float(g('fblc_percentile', 95.0)),
+		fblc_thresh_ms=float(g('fblc_thresh_ms', 8.0)),
+		fblc_min_pairs=int(g('fblc_min_pairs', 16)),
+		fblc_apply_on=g('fblc_apply_on', 'any'),
 	)
 
 
