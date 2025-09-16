@@ -41,11 +41,6 @@ def _load_headers_with_cache(
 			and cache_p.exists()
 			and cache_p.stat().st_mtime >= segy_p.stat().st_mtime
 		):
-			print(
-				rebuild,
-				cache_p.exists(),
-				cache_p.stat().st_mtime >= segy_p.stat().st_mtime,
-			)
 			z = np.load(cache_p, allow_pickle=False)
 			meta = {
 				'ffid_values': z['ffid_values'],
@@ -115,6 +110,20 @@ def _load_headers_with_cache(
 	return meta
 
 
+def _build_centroids(key_to_indices, X, Y):
+	if key_to_indices is None or X is None or Y is None:
+		return None
+	out = {}
+	for k, idxs in key_to_indices.items():
+		if idxs is None or len(idxs) == 0:
+			continue
+		# robust representative (median)
+		mx = float(np.median(X[idxs]))
+		my = float(np.median(Y[idxs]))
+		out[int(k)] = (mx, my)
+	return out
+
+
 class MaskedSegyGather(Dataset):
 	"""Dataset reading SEG-Y gathers with optional augmentation."""
 
@@ -128,6 +137,9 @@ class MaskedSegyGather(Dataset):
 		primary_keys: tuple[str, ...]
 		| None = None,  # 例: ('ffid','chno','cmp') / ('ffid',)
 		primary_key_weights: tuple[float, ...] | None = None,
+		use_superwindow: bool = False,
+		sw_halfspan: int = 0,
+		sw_prob: float = 0.3,
 		use_header_cache: bool = False,
 		header_cache_dir: str | None = None,
 		mask_ratio: float = 0.5,
@@ -148,6 +160,11 @@ class MaskedSegyGather(Dataset):
 		augment_freq_restandardize: bool = True,
 		target_mode: Literal['recon', 'fb_seg'] = 'recon',
 		label_sigma: float = 1.0,
+		reject_fblc: bool = False,
+		fblc_percentile: float = 95.0,
+		fblc_thresh_ms: float = 8.0,
+		fblc_min_pairs: int = 16,
+		fblc_apply_on: Literal['any', 'super_only'] = 'any',
 	) -> None:
 		"""Initialize dataset.
 
@@ -165,6 +182,9 @@ class MaskedSegyGather(Dataset):
 		self.primary_key_weights = (
 			tuple(primary_key_weights) if primary_key_weights else None
 		)
+		self.use_superwindow = use_superwindow
+		self.sw_halfspan = int(sw_halfspan)
+		self.sw_prob = sw_prob
 		self.use_header_cache = use_header_cache
 		self.header_cache_dir = header_cache_dir
 
@@ -187,10 +207,14 @@ class MaskedSegyGather(Dataset):
 		self.augment_freq_restandardize = augment_freq_restandardize
 		self.target_mode = target_mode
 		self.label_sigma = label_sigma
+		self.reject_fblc = bool(reject_fblc)
+		self.fblc_percentile = float(fblc_percentile)
+		self.fblc_thresh_ms = float(fblc_thresh_ms)
+		self.fblc_min_pairs = int(fblc_min_pairs)
+		self.fblc_apply_on = fblc_apply_on
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
-			print(self.use_header_cache, self.header_cache_dir)
 			if self.use_header_cache:
 				meta = _load_headers_with_cache(
 					segy_path,
@@ -255,6 +279,68 @@ class MaskedSegyGather(Dataset):
 				else None
 			)
 
+			# ---- distance centroids (FFID by source, CHNO by receiver) ----
+			srcx = srcy = None
+			grx = gry = None
+			try:
+				srcx = np.asarray(
+					f.attributes(segyio.TraceField.SourceX)[:], dtype=np.float64
+				)
+				srcy = np.asarray(
+					f.attributes(segyio.TraceField.SourceY)[:], dtype=np.float64
+				)
+			except Exception as e:
+				warnings.warn(
+					f'failed to read source coordinates from {segy_path}: {e}'
+				)
+				srcx = srcy = None
+			try:
+				grx = np.asarray(
+					f.attributes(segyio.TraceField.GroupX)[:], dtype=np.float64
+				)
+				gry = np.asarray(
+					f.attributes(segyio.TraceField.GroupY)[:], dtype=np.float64
+				)
+			except Exception as e:
+				warnings.warn(
+					f'failed to read receiver coordinates from {segy_path}: {e}'
+				)
+				grx = gry = None
+
+			if (
+				srcx is not None
+				and srcy is not None
+				and grx is not None
+				and gry is not None
+			):
+				try:
+					scal = np.asarray(
+						f.attributes(segyio.TraceField.SourceGroupScalar)[:],
+						dtype=np.float64,
+					)
+					scal_eff = np.where(
+						scal == 0.0,
+						1.0,
+						np.where(scal > 0.0, scal, 1.0 / np.abs(scal)),
+					)
+					if scal_eff.size == 1 or scal_eff.size == srcx.size:
+						srcx *= scal_eff
+						srcy *= scal_eff
+						grx *= scal_eff
+						gry *= scal_eff
+					else:
+						warnings.warn(f'SourceGroupScalar size mismatch in {segy_path}')
+						srcx = srcy = grx = gry = None
+				except Exception as e:
+					warnings.warn(
+						f'failed to read SourceGroupScalar from {segy_path}: {e}'
+					)
+					srcx = srcy = grx = gry = None
+
+			ffid_centroids = _build_centroids(ffid_key_to_indices, srcx, srcy)
+			chno_centroids = _build_centroids(chno_key_to_indices, grx, gry)
+			# ---------------------------------------------------------------
+
 			fb = np.load(fb_path)
 
 			self.file_infos.append(
@@ -277,6 +363,8 @@ class MaskedSegyGather(Dataset):
 					segy_obj=f,
 					fb=fb,
 					offsets=offsets,
+					ffid_centroids=ffid_centroids,
+					chno_centroids=chno_centroids,
 				)
 			)
 
@@ -321,19 +409,20 @@ class MaskedSegyGather(Dataset):
 
 	def __getitem__(self, _=None):
 		while True:
+			secondary_key = 'none'
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
 			fb = info['fb']
+
 			cmp_available = (
 				bool(info.get('cmp_unique_keys'))
 				and isinstance(info['cmp_unique_keys'], (list, tuple))
 				and len(info['cmp_unique_keys']) > 0
 			)
 
-			# 1) Hydra 指定がある場合は、それを優先して候補化（存在しないキーは自動で落とす）
+			# ---- primary key selection (Hydra weights if provided) ----
 			if self.primary_keys:
-				key_candidates = []
-				weight_candidates = []
+				key_candidates, weight_candidates = [], []
 				for i, k in enumerate(self.primary_keys):
 					if k not in self._valid_primary_keys:
 						warnings.warn(f'Unknown primary key "{k}" ignored.')
@@ -347,18 +436,15 @@ class MaskedSegyGather(Dataset):
 						)
 					else:
 						weight_candidates.append(1.0)
-				# すべて落ちた場合はデフォルトへフォールバック
-				if not key_candidates:
+				if not key_candidates:  # fallback
 					key_candidates = ['ffid', 'chno'] + (
 						['cmp'] if cmp_available else []
 					)
 					weight_candidates = [1.0] * len(key_candidates)
 			else:
-				# 2) 従来デフォルト
 				key_candidates = ['ffid', 'chno'] + (['cmp'] if cmp_available else [])
 				weight_candidates = [1.0] * len(key_candidates)
 
-			# 抽選（重みがあれば使用）
 			if any(w > 0 for w in weight_candidates) and len(weight_candidates) == len(
 				key_candidates
 			):
@@ -367,41 +453,129 @@ class MaskedSegyGather(Dataset):
 				)[0]
 			else:
 				key_name = random.choice(key_candidates)
+
 			unique_keys = info[f'{key_name}_unique_keys']
 			key_to_indices = info[f'{key_name}_key_to_indices']
 			if not unique_keys:
 				continue
+
 			key = random.choice(unique_keys)
 			indices = key_to_indices[key]
 
+			# === superwindow (distance-KNN for ffid/chno; index-window fallback) ===
+			if self.use_superwindow and self.sw_halfspan > 0:
+				apply_super = True
+				if hasattr(self, 'sw_prob') and float(self.sw_prob) < 1.0:
+					if random.random() >= float(self.sw_prob):
+						apply_super = False
+				if apply_super:
+					K = 1 + 2 * int(self.sw_halfspan)
+
+					def _index_window():
+						uniq = info.get(f'{key_name}_unique_keys', None)
+						uniq_arr = (
+							np.asarray(uniq, dtype=np.int64)
+							if isinstance(uniq, (list, tuple))
+							else np.asarray([], dtype=np.int64)
+						)
+						if uniq_arr.size > 0:
+							uniq_sorted = np.sort(uniq_arr)
+							center = int(key)
+							pos = np.searchsorted(uniq_sorted, center)
+							lo = max(0, pos - self.sw_halfspan)
+							hi = min(len(uniq_sorted), pos + self.sw_halfspan + 1)
+							return [int(k) for k in uniq_sorted[lo:hi]]
+						return [int(key)]
+
+					if key_name == 'ffid':
+						cent = info.get('ffid_centroids', None)
+						if isinstance(cent, dict) and int(key) in cent:
+							keys = np.fromiter(cent.keys(), dtype=np.int64)
+							coords = np.array(
+								[cent[int(k)] for k in keys], dtype=np.float64
+							)
+							cx, cy = cent[int(key)]
+							d = np.hypot(coords[:, 0] - cx, coords[:, 1] - cy)
+							order = np.argsort(d)
+							sel_keys = keys[order][:K]
+							k2map = info['ffid_key_to_indices']
+						else:
+							win_keys = _index_window()
+							k2map = info[f'{key_name}_key_to_indices']
+							sel_keys = np.asarray(win_keys, dtype=np.int64)
+					elif key_name == 'chno':
+						cent = info.get('chno_centroids', None)
+						if isinstance(cent, dict) and int(key) in cent:
+							keys = np.fromiter(cent.keys(), dtype=np.int64)
+							coords = np.array(
+								[cent[int(k)] for k in keys], dtype=np.float64
+							)
+							cx, cy = cent[int(key)]
+							d = np.hypot(coords[:, 0] - cx, coords[:, 1] - cy)
+							order = np.argsort(d)
+							sel_keys = keys[order][:K]
+							k2map = info['chno_key_to_indices']
+						else:
+							win_keys = _index_window()
+							k2map = info[f'{key_name}_key_to_indices']
+							sel_keys = np.asarray(win_keys, dtype=np.int64)
+					else:
+						win_keys = _index_window()
+						k2map = info[f'{key_name}_key_to_indices']
+						sel_keys = np.asarray(win_keys, dtype=np.int64)
+
+					chunks = []
+					for k2 in sel_keys:
+						idxs = k2map.get(int(k2))
+						if idxs is not None and len(idxs) > 0:
+							chunks.append(idxs)
+					if chunks:
+						indices = np.concatenate(chunks).astype(np.int64)
+					else:
+						indices = np.asarray(indices, dtype=np.int64)
+				else:
+					indices = np.asarray(indices, dtype=np.int64)
+			else:
+				indices = np.asarray(indices, dtype=np.int64)
+			# === end superwindow ===
+
 			# ---- secondary sort rules ----
-			# 1st=FFID  -> 2nd=CHNO or OFFSET (random)
-			# 1st=CHNO  -> 2nd=FFID or OFFSET (random)
-			# 1st=CMP   -> 2nd=OFFSET
 			try:
-				secondary = None
-				if key_name == 'ffid':
-					secondary = random.choice(('chno', 'offset'))
-				elif key_name == 'chno':
-					secondary = random.choice(('ffid', 'offset'))
-				elif key_name == 'cmp':
+				prim_vals = info[f'{key_name}_values'][indices]
+				if not self.use_superwindow and self.sw_halfspan > 0:
+					if key_name == 'ffid':
+						# secondary = random.choice(('chno', 'offset'))
+						secondary = 'chno'
+					elif key_name == 'chno':
+						# secondary = random.choice(('ffid', 'offset'))
+						secondary = 'ffid'
+					else:  # 'cmp'
+						secondary = 'offset'
+				else:
 					secondary = 'offset'
 
-				if secondary == 'chno' and info.get('chno_values') is not None:
-					order = np.argsort(info['chno_values'][indices], kind='mergesort')
-					indices = indices[order]
-				elif secondary == 'ffid' and info.get('ffid_values') is not None:
-					order = np.argsort(info['ffid_values'][indices], kind='mergesort')
-					indices = indices[order]
-				elif secondary == 'offset' and info.get('offsets') is not None:
-					order = np.argsort(info['offsets'][indices], kind='mergesort')
-					indices = indices[order]
-			except Exception:
-				# header missing → keep file order
-				pass
-			# ---- end secondary sort ----
+				secondary_key = secondary
+				if secondary == 'chno':
+					sec_vals = info['chno_values'][indices]
+				elif secondary == 'ffid':
+					sec_vals = info['ffid_values'][indices]
+				else:
+					sec_vals = info['offsets'][indices]
 
-			indices = key_to_indices[key]
+				# stable lexicographic: primary then secondary
+				o = np.argsort(prim_vals, kind='mergesort')
+				indices = indices[o]
+				sec_vals = sec_vals[o]
+				o2 = np.argsort(sec_vals, kind='mergesort')
+				indices = indices[o2]
+			except Exception as e:
+				print(f'Warning: secondary sort failed: {e}')
+				print(f'  key_name={key_name}, indices.shape={indices.shape}')
+				print(f'  prim_vals={prim_vals if "prim_vals" in locals() else "N/A"}')
+				print(f'  sec_vals={sec_vals if "sec_vals" in locals() else "N/A"}')
+				print(f'  {info["path"]}')
+
+			# ---- take up to 128 traces (contiguous slice) ----
 			n_total = len(indices)
 			if n_total >= 128:
 				start_idx = random.randint(0, n_total - 128)
@@ -411,101 +585,164 @@ class MaskedSegyGather(Dataset):
 				selected_indices = indices
 				pad_len = 128 - n_total
 			selected_indices = np.asarray(selected_indices, dtype=np.int64)
+
+			# primary unique set (for logging)
+			prim_vals_sel = info[f'{key_name}_values'][selected_indices].astype(
+				np.int64
+			)
+			primary_label_values = np.unique(prim_vals_sel)
+			primary_unique_str = ','.join(map(str, primary_label_values.tolist()))
+
+			# picks / offsets
 			fb_subset = fb[selected_indices]
 			if pad_len > 0:
 				fb_subset = np.concatenate(
 					[fb_subset, np.zeros(pad_len, dtype=fb_subset.dtype)]
 				)
-			offsets_full = info['offsets']
-			off_subset = offsets_full[selected_indices].astype(np.float32, copy=False)
+			off_subset = info['offsets'][selected_indices].astype(np.float32)
 			if pad_len > 0:
 				off_subset = np.concatenate(
 					[off_subset, np.zeros(pad_len, dtype=np.float32)]
 				)
+
+			# require enough picks
 			pick_ratio = np.count_nonzero(fb_subset > 0) / len(fb_subset)
-			if pick_ratio >= self.pick_ratio:
-				break
-		x = mmap[selected_indices].astype(np.float32, copy=False)
-		if pad_len > 0:
-			pad_tr = np.zeros((pad_len, x.shape[1]), dtype=np.float32)
-			x = np.concatenate([x, pad_tr], axis=0)
-		x = x - np.mean(x, axis=1, keepdims=True)
-		x = x / (np.std(x, axis=1, keepdims=True) + 1e-10)
-		if self.flip and random.random() < 0.5:
-			x = np.flip(x, axis=0).copy()
-			fb_subset = fb_subset[::-1].copy()
-			off_subset = off_subset[::-1].copy()
-		factor = 1.0
-		if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
-			factor = random.uniform(*self.augment_time_range)
-			frac = Fraction(factor).limit_denominator(128)
-			up, down = frac.numerator, frac.denominator
-			H_tmp = x.shape[0]
-			x = np.stack(
-				[resample_poly(x[h], up, down, padtype='line') for h in range(H_tmp)],
-				axis=0,
-			)
-		x, start = self._fit_time_len(x)
-		did_space = False
-		f_h = 1.0
-		if self.augment_space_prob > 0 and random.random() < self.augment_space_prob:
-			f_h = random.uniform(*self.augment_space_range)
-			x = _spatial_stretch_sameH(x, f_h)  # 既存行
-			off_subset = _spatial_stretch_sameH(off_subset[:, None], f_h)[:, 0].astype(
-				np.float32,
-				copy=False,
-			)
-			did_space = True
-		if self.augment_freq_prob > 0 and random.random() < self.augment_freq_prob:
-			x = _apply_freq_augment(
-				x,
-				self.augment_freq_kinds,
-				self.augment_freq_band,
-				self.augment_freq_width,
-				self.augment_freq_roll,
-				self.augment_freq_restandardize,
-			)
-		fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
-		invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
-		fb_idx_win[invalid] = -1
-		H = x.shape[0]
-		num_mask = int(self.mask_ratio * H)
-		mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
-		x_masked = x.copy()
-		if num_mask > 0:
-			noise = np.random.normal(
-				0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
-			)
-			if self.mask_mode == 'replace':
-				x_masked[mask_idx] = noise
-			elif self.mask_mode == 'add':
-				x_masked[mask_idx] += noise
-			else:
-				raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
-		if self.target_mode == 'fb_seg':
-			sigma = max(float(self.label_sigma), 1e-6)
-			H_t, W_t = x.shape
-			t = np.arange(W_t, dtype=np.float32)[None, :]
-			target = np.zeros((H_t, W_t), dtype=np.float32)
+			if pick_ratio < self.pick_ratio:
+				continue  # retry whole sample
 
-			idx = fb_idx_win
-			valid = idx >= 0
-			if valid.any():
-				idxv = idx[valid].astype(np.float32)[:, None]
-				g = np.exp(-0.5 * ((t - idxv) / sigma) ** 2)
-				g /= g.max(axis=1, keepdims=True) + 1e-12
-				target[valid] = g
+			# ---- load traces, normalize, augment ----
+			x = mmap[selected_indices].astype(np.float32)
+			if pad_len > 0:
+				pad_tr = np.zeros((pad_len, x.shape[1]), dtype=np.float32)
+				x = np.concatenate([x, pad_tr], axis=0)
 
-			# ② ターゲットにも同じ空間ストレッチを適用
-			if did_space:
-				target = _spatial_stretch_sameH(target, f_h)
+			# per-trace standardize
+			x = x - np.mean(x, axis=1, keepdims=True)
+			x = x / (np.std(x, axis=1, keepdims=True) + 1e-10)
 
-			target_t = torch.from_numpy(target)[None, ...]
+			# optional flip
+			if self.flip and random.random() < 0.5:
+				x = np.flip(x, axis=0).copy()
+				fb_subset = fb_subset[::-1].copy()
+				off_subset = off_subset[::-1].copy()
+
+			# time augment
+			factor = 1.0
+			if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
+				factor = random.uniform(*self.augment_time_range)
+				frac = Fraction(factor).limit_denominator(128)
+				up, down = frac.numerator, frac.denominator
+				H_tmp = x.shape[0]
+				x = np.stack(
+					[
+						resample_poly(x[h], up, down, padtype='line')
+						for h in range(H_tmp)
+					],
+					axis=0,
+				)
+
+			# fit/crop/pad time length
+			x, start = self._fit_time_len(x)
+
+			# space augment (and keep offsets in sync)
+			did_space = False
+			f_h = 1.0
+			if (
+				self.augment_space_prob > 0
+				and random.random() < self.augment_space_prob
+			):
+				f_h = random.uniform(*self.augment_space_range)
+				x = _spatial_stretch_sameH(x, f_h)
+				off_subset = _spatial_stretch_sameH(off_subset[:, None], f_h)[
+					:, 0
+				].astype(np.float32)
+				did_space = True
+
+			# freq augment
+			if self.augment_freq_prob > 0 and random.random() < self.augment_freq_prob:
+				x = _apply_freq_augment(
+					x,
+					self.augment_freq_kinds,
+					self.augment_freq_band,
+					self.augment_freq_width,
+					self.augment_freq_roll,
+					self.augment_freq_restandardize,
+				)
+
+			# first-break indices in window
+			fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
+			invalid = (fb_idx_win <= 0) | (fb_idx_win >= self.target_len)
+			fb_idx_win[invalid] = -1
+
+			# FBLC gate (before masking/target/tensorization)
+			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
+			if self.reject_fblc:
+				apply_gate = self.fblc_apply_on == 'any'
+				if self.fblc_apply_on == 'super_only':
+					apply_gate = bool(
+						getattr(self, 'use_superwindow', False)
+						and getattr(self, 'sw_halfspan', 0) > 0
+					)
+				if apply_gate:
+					v = fb_idx_win.astype(np.float64)
+					valid = v >= 0
+					m = valid[1:] & valid[:-1]
+					valid_pairs = int(m.sum())
+
+					# ★ ここを「棄却」に変更（以前は判定スキップ）
+					if valid_pairs < int(self.fblc_min_pairs):
+						continue  # サンプル棄却して再抽選
+
+					diffs = np.abs(v[1:] - v[:-1])[m]  # samples
+					p = float(np.percentile(diffs, float(self.fblc_percentile)))
+					p_ms = p * float(dt_eff_sec) * 1000.0
+					if p_ms > float(self.fblc_thresh_ms):
+						# print(
+						# f'Rejecting gather {info["path"]} key={key_name}:{key} '
+						# f'for FBLC {p_ms:.1f}ms > {self.fblc_thresh_ms}ms'
+						# )
+						continue  # reject and resample
+
+			# masking (after acceptance)
+			H = x.shape[0]
+			num_mask = int(self.mask_ratio * H)
+			mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
+			x_masked = x.copy()
+			if num_mask > 0:
+				noise = np.random.normal(
+					0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
+				)
+				if self.mask_mode == 'replace':
+					x_masked[mask_idx] = noise
+				elif self.mask_mode == 'add':
+					x_masked[mask_idx] += noise
+				else:
+					raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
+
+			# target (optional)
+			target_t = None
+			if self.target_mode == 'fb_seg':
+				sigma = max(float(self.label_sigma), 1e-6)
+				H_t, W_t = x.shape
+				t = np.arange(W_t, dtype=np.float32)[None, :]
+				target = np.zeros((H_t, W_t), dtype=np.float32)
+				idx = fb_idx_win
+				valid = idx >= 0
+				if valid.any():
+					idxv = idx[valid].astype(np.float32)[:, None]
+					g = np.exp(-0.5 * ((t - idxv) / sigma) ** 2)
+					g /= g.max(axis=1, keepdims=True) + 1e-12
+					target[valid] = g
+				if did_space:
+					target = _spatial_stretch_sameH(target, f_h)
+				target_t = torch.from_numpy(target)[None, ...]
+
+			# tensors + sample dict
 			x_t = torch.from_numpy(x)[None, ...]
 			xm = torch.from_numpy(x_masked)[None, ...]
 			fb_idx_t = torch.from_numpy(fb_idx_win)
 			off_t = torch.from_numpy(off_subset)
-			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
+
 			sample = {
 				'masked': xm,
 				'original': x_t,
@@ -514,9 +751,12 @@ class MaskedSegyGather(Dataset):
 				'dt_sec': torch.tensor(dt_eff_sec, dtype=torch.float32),
 				'mask_indices': mask_idx,
 				'key_name': key_name,
+				'secondary_key': secondary_key,
 				'indices': selected_indices,
 				'file_path': info['path'],
+				'primary_unique': primary_unique_str,
 			}
-			if self.target_mode == 'fb_seg':
+			if target_t is not None:
 				sample['target'] = target_t
+
 			return sample

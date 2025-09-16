@@ -99,6 +99,9 @@ train_dataset = MaskedSegyGather(
 	primary_key_weights=getattr(cfg.dataset, 'primary_key_weights', None),
 	use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
 	header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
+	use_superwindow=getattr(cfg.dataset, 'use_superwindow', False),
+	sw_halfspan=getattr(cfg.dataset, 'sw_halfspan', 0),
+	sw_prob=getattr(cfg.dataset, 'sw_prob', 0.3),
 	mask_ratio=cfg.dataset.mask_ratio,
 	mask_mode=cfg.dataset.mask_mode,
 	mask_noise_std=cfg.dataset.mask_noise_std,
@@ -115,14 +118,22 @@ train_dataset = MaskedSegyGather(
 	augment_freq_width=tuple(cfg.dataset.augment.freq.width),
 	augment_freq_roll=cfg.dataset.augment.freq.roll,
 	augment_freq_restandardize=cfg.dataset.augment.freq.restandardize,
+	reject_fblc=cfg.dataset.reject_fblc,
+	fblc_percentile=cfg.dataset.fblc_percentile,
+	fblc_thresh_ms=cfg.dataset.fblc_thresh_ms,
+	fblc_min_pairs=cfg.dataset.fblc_min_pairs,
+	fblc_apply_on=cfg.dataset.fblc_apply_on,
 )
-# %%
+
 if task == 'fb_seg':
 	valid_dataset = MaskedSegyGather(
 		valid_segy_files,
 		valid_fb_files,
 		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
 		header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
+		primary_keys=('ffid',),
+		use_superwindow=False,
+		sw_halfspan=0,
 		mask_ratio=0,
 		mask_mode=cfg.dataset.mask_mode,
 		mask_noise_std=0,
@@ -139,6 +150,9 @@ elif task == 'recon':
 		valid_fb_files,
 		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
 		header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
+		primary_keys=('ffid',),
+		use_superwindow=False,
+		sw_halfspan=0,
 		mask_ratio=cfg.dataset.mask_ratio,
 		mask_mode=cfg.dataset.mask_mode,
 		mask_noise_std=cfg.dataset.mask_noise_std,
@@ -148,6 +162,7 @@ elif task == 'recon':
 		augment_time_prob=0.0,
 		augment_space_prob=0.0,
 		augment_freq_prob=0.0,
+		reject_fblc=False,
 	)
 val_src = copy.copy(valid_dataset)  # file_infos を共有
 val_src.flip = False  # ここだけ無反転で取りたい場合
