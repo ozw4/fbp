@@ -1,0 +1,49 @@
+defaults:
+  - base           # 継承（学習用のベース設定）
+  - _self_
+
+# ランタイム(共通)
+device: cuda
+use_amp: true
+seed: 42
+
+
+# ===== Inference 専用設定 =====
+infer:
+  valid_field_list: ${valid_field_list}
+
+  # 必須: チェックポイントパス（HydraのCLIで override 可能）
+  ckpt: /workspace/proc/result/fb_seg/train_field_list_wotstkres_edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_inpoffs_unfreeze_addcmp_addsuper/model_100.pth
+  # 評価ドメイン（shot=FFID, recv=CHNO, cmp=CMP, super=shotに対するsuperwindow）
+  domains: [shot, recv, cmp]
+
+  # TTAビュー（**垂直反転は無効**）
+  tta_views: [none, hflip]
+
+  # TTAのマージ（各ドメイン内部）: mean | median
+  merge: mean
+
+  # DataLoader
+  batch_size: ${batch_size}
+  num_workers: ${num_workers}
+  max_batches: 0  # 0=全バッチ
+
+  # 速度コーン制約を推論時にも適用するか
+  use_velocity_mask: true
+
+  # 出力: ドメイン別の指標をレポートするか（cross-domain のみ欲しい場合は false）
+  report_per_domain: true
+
+  # 統合IDの生成に使うキーの組み合わせ（優先順）
+  id_key_pairs:
+    - [ffid, chno]
+    - [chno, ffid]
+    - [cmp, offset]
+
+  # ===== Cross-domain merge over entire survey =====
+  cross_merge: true                 # 有効化
+  cross_merge_mode: median          # mean | median | wmean（confidence重み）
+  cross_min_domains: 2              # 採用に必要な最小ドメイン数
+  # cross_merge_domains は未指定なら `domains` から自動導出（既定で super を除外）。
+  # 必要な場合のみ明示的に指定してください。
+  # cross_merge_domains: [shot, recv, cmp]
