@@ -165,6 +165,7 @@ class MaskedSegyGather(Dataset):
 		fblc_thresh_ms: float = 8.0,
 		fblc_min_pairs: int = 16,
 		fblc_apply_on: Literal['any', 'super_only'] = 'any',
+		valid: bool = False,
 	) -> None:
 		"""Initialize dataset.
 
@@ -212,6 +213,7 @@ class MaskedSegyGather(Dataset):
 		self.fblc_thresh_ms = float(fblc_thresh_ms)
 		self.fblc_min_pairs = int(fblc_min_pairs)
 		self.fblc_apply_on = fblc_apply_on
+		self.valid = valid
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
@@ -461,7 +463,7 @@ class MaskedSegyGather(Dataset):
 
 			key = random.choice(unique_keys)
 			indices = key_to_indices[key]
-
+			apply_super = False
 			# === superwindow (distance-KNN for ffid/chno; index-window fallback) ===
 			if self.use_superwindow and self.sw_halfspan > 0:
 				apply_super = True
@@ -542,17 +544,25 @@ class MaskedSegyGather(Dataset):
 			# ---- secondary sort rules ----
 			try:
 				prim_vals = info[f'{key_name}_values'][indices]
-				if not self.use_superwindow and self.sw_halfspan > 0:
+				if not apply_super and not self.valid:
 					if key_name == 'ffid':
-						# secondary = random.choice(('chno', 'offset'))
+						secondary = random.choice(('chno', 'offset'))
+						# secondary = 'chno'
+					elif key_name == 'chno':
+						secondary = random.choice(('ffid', 'offset'))
+						# secondary = 'ffid'
+					else:  # 'cmp'
+						secondary = 'offset'
+
+				elif apply_super and not self.valid:
+					secondary = 'offset'
+				elif self.valid:
+					if key_name == 'ffid':
 						secondary = 'chno'
 					elif key_name == 'chno':
-						# secondary = random.choice(('ffid', 'offset'))
 						secondary = 'ffid'
 					else:  # 'cmp'
 						secondary = 'offset'
-				else:
-					secondary = 'offset'
 
 				secondary_key = secondary
 				if secondary == 'chno':

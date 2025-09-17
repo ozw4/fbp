@@ -54,7 +54,7 @@ def load_state_dict_excluding(
 	return missing, unexpected
 
 
-SEED = 42
+SEED =
 set_seed(SEED)
 rng = np.random.default_rng()
 
@@ -123,6 +123,7 @@ train_dataset = MaskedSegyGather(
 	fblc_thresh_ms=cfg.dataset.fblc_thresh_ms,
 	fblc_min_pairs=cfg.dataset.fblc_min_pairs,
 	fblc_apply_on=cfg.dataset.fblc_apply_on,
+	valid=True,
 )
 
 if task == 'fb_seg':
