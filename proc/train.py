@@ -26,7 +26,7 @@ from proc.util.ema import ModelEMA
 from proc.util.eval import eval_synthe, val_one_epoch_snr
 from proc.util.loss import make_criterion, make_fb_seg_criterion
 from proc.util.model import NetAE, adjust_first_conv_padding
-from proc.util.model_utils import inflate_input_convs_to_2ch
+from proc.util.model_utils import inflate_input_convs_to_nch, inflate_input_convs_to_2ch
 from proc.util.predict import cover_all_traces_predict_chunked
 from proc.util.rng_util import worker_init_fn
 from proc.util.train_loop import train_one_epoch
@@ -383,8 +383,21 @@ if cfg.resume:
 				'[resume] loaded model weights only (optimizer/scheduler reinitialized)'
 			)
 
-if getattr(cfg.model, 'use_offset_input', False):
-	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='zero')
+if getattr(cfg.model, 'use_offset_input', False) and getattr(
+	cfg.model, 'use_time_input', True
+):
+	inflate_input_convs_to_nch(
+		model_without_ddp if 'model_without_ddp' in locals() else model,
+		3,
+		verbose=True,
+		init_mode='duplicate',
+	)
+elif getattr(cfg.model, 'use_offset_input', False):
+	inflate_input_convs_to_2ch(
+		model_without_ddp if 'model_without_ddp' in locals() else model,
+		verbose=True,
+		init_mode='duplicate',
+	)
 
 # 3) 段階解凍のガード用フラグ
 model._transfer_loaded = transfer_loaded
