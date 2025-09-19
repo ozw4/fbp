@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader, SequentialSampler
 from tqdm.auto import tqdm
 
 from proc.util.dataset import MaskedSegyGather
-from proc.util.features import make_offset_channel
+from proc.util.features import make_offset_channel_phys, make_time_channel
 from proc.util.model import NetAE, adjust_first_conv_padding
 from proc.util.model_utils import inflate_input_convs_to_2ch
 from proc.util.utils import collect_field_files, set_seed
@@ -518,13 +518,28 @@ def run_one_view(domain: str, view: TTAName) -> tuple[np.ndarray, dict]:
 	)
 
 	model.eval()
-	for x, _t, _m, meta in loader:
-		x = x.to(device, non_blocking=True)
-		# build input (offset channel if requested)
-		x_in = x
-		if getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
-			offs = make_offset_channel(x, meta['offsets'])
-			x_in = torch.cat([x, offs.to(device=x.device, dtype=x.dtype)], dim=1)
+        for x, _t, _m, meta in loader:
+                x = x.to(device, non_blocking=True)
+                # build input (offset channel if requested)
+                x_in = x
+                use_offset = getattr(cfg.model, 'use_offset_input', False)
+                use_time = getattr(cfg.model, 'use_time_input', False)
+                if (use_offset or use_time) and ('offsets' in meta):
+                        offs = make_offset_channel_phys(
+                                x, meta['offsets'],
+                                x95_m=cfg.norm.x95_m,
+                                mode=getattr(cfg.norm, 'offset_mode', 'log1p'),
+                                clip_hi=getattr(cfg.norm, 'offset_clip_hi', 1.5),
+                        ).to(device=x.device, dtype=x.dtype)
+                        if use_time and ('dt_sec' in meta):
+                                time_ch = make_time_channel(
+                                        x, meta['dt_sec'],
+                                        t95_ms=cfg.norm.t95_ms,
+                                        clip_hi=getattr(cfg.norm, 'time_clip_hi', 1.5),
+                                ).to(device=x.device, dtype=x.dtype)
+                                x_in = torch.cat([x, offs, time_ch], dim=1)
+                        else:
+                                x_in = torch.cat([x, offs], dim=1)
 
 		# run single view
 		dev_type = 'cuda' if x.is_cuda else 'cpu'
