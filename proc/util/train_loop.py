@@ -5,7 +5,7 @@ from torch.amp.autocast_mode import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from proc.util import utils
-from proc.util.features import make_offset_channel
+from proc.util.features import make_offset_channel_phys, make_time_channel
 
 from .loss import shift_robust_l2_pertrace_vec
 
@@ -107,16 +107,17 @@ def train_one_epoch(
 	device,
 	epoch,
 	print_freq,
-	writer=None,
-	use_offset_input: bool = False,
-	use_amp=True,
-	scaler=None,
-	ema=None,
-	gradient_accumulation_steps=1,
-	max_shift=5,
-	step: int = 0,
-	freeze_epochs: int = 0,
-	unfreeze_steps: int = 1,
+        writer=None,
+        use_offset_input: bool = False,
+        use_amp=True,
+        scaler=None,
+        ema=None,
+        gradient_accumulation_steps=1,
+        max_shift=5,
+        step: int = 0,
+        freeze_epochs: int = 0,
+        unfreeze_steps: int = 1,
+        cfg=None,
 ):
 	"""Run one training epoch."""
 	if getattr(model, '_transfer_loaded', False) and freeze_epochs > 0:
@@ -202,9 +203,42 @@ def train_one_epoch(
 						meta[k] = meta[k][keep]
 			with autocast(device_type=device_type, enabled=use_amp):
 				x_in = x_masked
-				if use_offset_input and ('offsets' in meta):
-					offs_ch = make_offset_channel(x_masked, meta['offsets'])
-					x_in = torch.cat([x_masked, offs_ch], dim=1)
+				cfg_obj = cfg if cfg is not None else getattr(model, 'cfg', None)
+				if (
+					use_offset_input
+					and cfg_obj is not None
+					and getattr(
+						getattr(cfg_obj, 'model', None),
+						'use_offset_input',
+						False,
+					)
+					and getattr(
+						getattr(cfg_obj, 'model', None),
+						'use_time_input',
+						True,
+					)
+					and ('offsets' in meta)
+					and ('dt_sec' in meta)
+				):
+					norm_cfg = getattr(cfg_obj, 'norm', None)
+					if norm_cfg is None:
+						raise AttributeError(
+							'cfg.norm is required when use_offset_input is enabled'
+						)
+					offs_ch = make_offset_channel_phys(
+						x_masked,
+						meta['offsets'],
+						x95_m=getattr(norm_cfg, 'x95_m'),
+						mode=getattr(norm_cfg, 'offset_mode', 'log1p'),
+						clip_hi=getattr(norm_cfg, 'offset_clip_hi', 1.5),
+					)
+					time_ch = make_time_channel(
+						x_masked,
+						meta['dt_sec'],
+						t95_ms=getattr(norm_cfg, 't95_ms'),
+						clip_hi=getattr(norm_cfg, 'time_clip_hi', 1.5),
+					)
+					x_in = torch.cat([x_masked, offs_ch, time_ch], dim=1)
 				pred = model(x_in)
 				if not _finite_or_report('logits', pred, meta):
 					print('[SKIP] non-finite logits; skipping batch')
