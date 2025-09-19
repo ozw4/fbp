@@ -9,7 +9,7 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: 'edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_inpoffs_unfreeze_addcmp_addsuper2oft'
+suffix: edgenext_small.usi_in1k_in1k_default1_swprob05_secondrand'
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -26,7 +26,7 @@ use_ema: True
 use_amp: True
 ema_decay: 0.99
 
-device: 'cuda'
+device: 'cuda:1'
 
 # Training task
 task: fb_seg  # recon | fb_seg
@@ -80,10 +80,10 @@ snr:
 
 dataset:
   primary_keys: [ffid, chno, cmp]        # 例: [ffid, chno, cmp] / [ffid] / [chno, cmp]
-  primary_key_weights: null   # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
+  primary_key_weights: [0.33,0.33,0.33]  # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
   use_superwindow: true        # true で近傍 primary を結合（非平均）
   sw_halfspan: 1                # ±いくつ結合するか（0で無効）
-  sw_prob: 0.3
+  sw_prob: 0.5
   use_header_cache: true         # 既定false。trueで .npz を利用s
   header_cache_dir: null         # nullなら SEG-Y と同じ場所に作成
   mask_ratio: 0
@@ -95,7 +95,7 @@ dataset:
   # --- First-Break Lateral Continuity (FBLC) filter ---
   reject_fblc: True          # true で粗い（ギザギザな）初動のサンプルを棄却
   fblc_percentile: 95.0       # 隣接 |Δt| のパーセンタイル（%）
-  fblc_thresh_ms: 20.0         # 上記パーセンタイルの閾値 [ms]
+  fblc_thresh_ms: 30.0         # 上記パーセンタイルの閾値 [ms]
   fblc_min_pairs: 16          # 有効隣接ペアの最小本数（少なすぎると判定しない）
   fblc_apply_on: super_only         # 'any' | 'super_only'
   augment:

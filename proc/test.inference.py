@@ -1,36 +1,25 @@
 # %%
 # proc/test.inference_tta.py
-"""Test-Time Augmentation (TTA) inference & validation for FB segmentation with Hydra config.
+"""Collect ALL logits per view and evaluate per view (6 views total).
 
-- Augmentations: **horizontal flip only** (trace order). *Vertical (time) flip is intentionally disabled.*
-- Domains: shot-gather (ffid), receiver-gather (chno), CMP-gather (cmp), and super-gather (superwindow over shot)
-- Per-domain metrics + optional **cross-domain merge** over the entire survey
-- TTA merge rule (within a view set): mean | median (default: mean)
-- Cross-domain merge rule: mean | median | wmean (confidence-weighted mean)
-- Metric: Hit@{0,2,4,8} ms (fraction of traces whose predicted FB falls within tolerance)
+- Views: horizontal flip only -> {none, hflip}
+- Domains: shot(=ffid), recv(=chno), cmp(=cmp)
+- Loop order: for domain in domains: for view in [none, hflip]
+- For each (domain, view):
+    * run model without internal TTA
+    * invert flip so logits return to the **original trace order**
+    * reconstruct a single (num_traces_total, W) array by averaging overlapped windows
+    * evaluate Hit@{0,2,4,8} ms on this view
+    * (optionally) save that 2D array to disk: <out_root>/<domain>_<view>.npy
+- After all 6 views are processed:
+    * build all_logits = [shot_none, shot_hflip, chno_none, chno_hflip, cmp_none, cmp_hflip]
 
-Usage
------
-python -m proc.test.inference_tta \
-  infer.ckpt=/path/to/ckpt.pt \
-  infer.tta_views="[none,hflip]" infer.merge=mean \
-  infer.cross_merge=true infer.cross_merge_mode=median infer.cross_min_domains=2 \
-  infer.id_key_pairs='[[ffid,chno],[chno,ffid],[cmp,offset]]' \
-  infer.win_size_traces=128 infer.win_stride_traces=64 infer.win_pad_last=true  # 窓列挙（128tr, stride=64, 末尾パッド）
-
-Notes
------
-* cross-merge対象ドメインは **未指定なら `domains` から自動導出**（既定で `super` を除外）。
-  必要な場合のみ `infer.cross_merge_domains` で明示的に上書きしてください。
-* キーの組（UID生成）は `infer.id_key_pairs` で優先順を指定（既定: ffid-chno → chno-ffid → cmp-offset）。
-
+No cross-domain/merged evaluation here (per your request).
 """
 
 from __future__ import annotations
 
-import math
-from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -46,18 +35,13 @@ from proc.util.features import make_offset_channel
 from proc.util.model import NetAE, adjust_first_conv_padding
 from proc.util.model_utils import inflate_input_convs_to_2ch
 from proc.util.utils import collect_field_files, set_seed
-from proc.util.velocity_mask import (
-	apply_velocity_mask_to_logits,
-	make_velocity_feasible_mask,
-)
 
 # -------------------------
-# Utilities
+# Minimal model helpers
 # -------------------------
 
 
 def build_model_from_cfg(cfg) -> torch.nn.Module:
-	"""Instantiate model for FB segmentation / recon heads."""
 	model = NetAE(
 		backbone=cfg.backbone,
 		pretrained=True,
@@ -65,33 +49,27 @@ def build_model_from_cfg(cfg) -> torch.nn.Module:
 		pre_stages=2,
 		pre_stage_strides=((1, 1), (1, 2)),
 	)
-
 	if getattr(cfg.model, 'first_conv_same_pad', False):
 		adjust_first_conv_padding(model.backbone, padding=(1, 1))
-
 	if getattr(cfg.model, 'use_offset_input', False):
 		inflate_input_convs_to_2ch(model)
-
 	return model
 
 
 def load_checkpoint(model: torch.nn.Module, path: str | Path) -> None:
 	state = torch.load(str(path), map_location='cpu', weights_only=False)
-	cand_keys = ['model_ema', 'state_dict', 'model']
-	for k in cand_keys:
+	for k in ['model_ema', 'state_dict', 'model']:
 		if k in state and isinstance(state[k], dict):
-			missing, unexpected = model.load_state_dict(state[k], strict=False)
-			print(
-				f"[ckpt] loaded via key='{k}': missing={len(missing)} unexpected={len(unexpected)}"
-			)
+			model.load_state_dict(state[k], strict=False)
+			print(f"[ckpt] loaded via key='{k}'")
 			return
-	missing, unexpected = model.load_state_dict(state, strict=False)
-	print(
-		f'[ckpt] loaded raw dict: missing={len(missing)} unexpected={len(unexpected)}'
-	)
+	model.load_state_dict(state, strict=False)
+	print('[ckpt] loaded raw dict')
 
 
-# Flip helpers ---------------------------------------------------------------
+# -------------------------
+# Views
+# -------------------------
 
 TTAName = Literal['none', 'hflip']
 
@@ -100,314 +78,21 @@ def _hflip(x: torch.Tensor) -> torch.Tensor:
 	return x.flip(dims=(2,))  # traces axis
 
 
-FLIP_FNS: dict[
-	TTAName,
-	tuple[
-		Callable[[torch.Tensor], torch.Tensor], Callable[[torch.Tensor], torch.Tensor]
-	],
-] = {
-	'none': (lambda x: x, lambda x: x),
-	'hflip': (_hflip, _hflip),
-}
+def apply_view(x: torch.Tensor, view: TTAName) -> torch.Tensor:
+	return x if view == 'none' else _hflip(x)
 
 
-def _merge_stack(
-	x_list: list[torch.Tensor], mode: Literal['mean', 'median']
-) -> torch.Tensor:
-	x = torch.stack(x_list, dim=0)
-	if mode == 'mean':
-		return x.mean(dim=0)
-	if mode == 'median':
-		return x.median(dim=0).values
-	raise ValueError(f'Invalid merge mode: {mode}')
+def invert_view(x: torch.Tensor, view: TTAName) -> torch.Tensor:
+	return x if view == 'none' else _hflip(x)
 
 
-# Prediction core ------------------------------------------------------------
-
-
-@torch.no_grad()
-def predict_with_tta(
-	model: torch.nn.Module,
-	x: torch.Tensor,
-	meta: dict,
-	cfg,
-	*,
-	device: torch.device,
-	tta_views: Iterable[TTAName] = ('none', 'hflip'),
-	merge: Literal['mean', 'median'] = 'mean',
-	use_amp: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor]:
-	"""Return (pred_idx, prob_max) for a batch."""
-	B, C, H, W = x.shape
-	x_in = x
-	if getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
-		offs_ch = make_offset_channel(x, meta['offsets'])
-		x_in = torch.cat([x, offs_ch.to(device=x.device, dtype=x.dtype)], dim=1)
-
-	tta_logits = []
-	dev_type = 'cuda' if x.is_cuda else 'cpu'
-	with autocast(device_type=dev_type, enabled=use_amp):
-		for name in tta_views:
-			f, inv = FLIP_FNS[name]
-			xin = f(x_in)
-			logits = model(xin)  # (B,1,H,W)
-			logits = inv(logits)
-			tta_logits.append(logits)
-
-	logit = _merge_stack(tta_logits, mode=merge)  # (B,1,H,W)
-
-	fb_cfg = getattr(cfg.loss, 'fb_seg', None)
-	if (
-		('offsets' in meta)
-		and ('dt_sec' in meta)
-		and bool(getattr(cfg.infer, 'use_velocity_mask', True))
-		and (fb_cfg is not None)
-	):
-		velmask = make_velocity_feasible_mask(
-			offsets=meta['offsets'].to(device),
-			dt_sec=meta['dt_sec'].to(device).view(B),
-			W=W,
-			vmin=float(getattr(fb_cfg, 'vmin_mask', 500.0)),
-			vmax=float(getattr(fb_cfg, 'vmax_mask', 10000.0)),
-			t0_lo_ms=float(getattr(fb_cfg, 't0_lo_ms', -100.0)),
-			t0_hi_ms=float(getattr(fb_cfg, 't0_hi_ms', 80.0)),
-			taper_ms=float(getattr(fb_cfg, 'taper_ms', 10.0)),
-			device=device,
-		)
-		logit = apply_velocity_mask_to_logits(logit, velmask)
-
-	prob = torch.sigmoid(logit[:, 0])  # (B,H,W)
-	prob_max, pred_idx = prob.max(dim=-1)  # (B,H)
-	return pred_idx, prob_max
-
-
-# Per-domain evaluation ------------------------------------------------------
-
-
-@torch.no_grad()
-def eval_fbseg_with_tta(
-	model: torch.nn.Module,
-	loader: DataLoader,
-	cfg,
-	*,
-	device: torch.device,
-	tta_views: Iterable[TTAName] = ('none', 'hflip'),
-	merge: Literal['mean', 'median'] = 'mean',
-	use_amp: bool = True,
-) -> dict:
-	"""Per-domain evaluation (Hit@ms)."""
-	model.eval()
-	fb_cfg = getattr(cfg.loss, 'fb_seg', None)
-	if fb_cfg is None:
-		raise RuntimeError(
-			'cfg.loss.fb_seg not found; set task=fb_seg / provide loss.fb_seg in config'
-		)
-
-	thr_ms = getattr(fb_cfg, 'hit_thresholds_ms', (0.0, 2.0, 4.0, 8.0))
-	thr_ms = tuple(float(t) for t in thr_ms)
-
-	hit_counts = {f'hit@{int(t)}': 0 for t in thr_ms}
-	n_valid_total = 0
-
-	for x, _teacher, _mask, meta in loader:
-		x = x.to(device, non_blocking=True)
-		B, C, H, W = x.shape
-
-		pred_idx, _prob_max = predict_with_tta(
-			model,
-			x,
-			meta,
-			cfg,
-			device=device,
-			tta_views=tta_views,
-			merge=merge,
-			use_amp=use_amp,
-		)
-
-		fb_idx = meta['fb_idx'].to(device)
-		valid = (fb_idx > 0) & (fb_idx < W)
-		dt_sec = meta['dt_sec'].to(device).view(B)
-		tol_samp = [
-			torch.round(torch.tensor(t / 1000.0, device=device) / dt_sec).to(torch.long)
-			for t in thr_ms
-		]
-		fb_idx = fb_idx.clamp(0, W - 1)
-
-		diff = (pred_idx - fb_idx).abs()
-		n_valid_total += int(valid.sum().item())
-
-		for t, tol in zip(thr_ms, tol_samp, strict=False):
-			tol_bh = tol.view(B, 1).expand_as(diff)
-			hit = (diff <= tol_bh) & valid
-			hit_counts[f'hit@{int(t)}'] += int(hit.sum().item())
-
-	out = {k: (v / max(n_valid_total, 1)) for k, v in hit_counts.items()}
-	out['n_tr_valid'] = n_valid_total
-	return out
-
-
-# Cross-domain aggregator ----------------------------------------------------
-
-
-class KeyResolver:
-	"""Build a canonical UID per trace from configured key-pairs.
-
-	Default order tries: (ffid,chno) -> (chno,ffid) -> (cmp,offset).
-	This is easily extensible via infer.id_key_pairs.
-	"""
-
-	def __init__(self, key_pairs: Sequence[Sequence[str]]):
-		# normalize to tuples of two strings
-		self.pairs: list[tuple[str, str]] = [(str(a), str(b)) for a, b in key_pairs]
-
-	def get_uid(self, meta: dict, b: int, h: int) -> str | None:
-		def _get(name: str):
-			if name == 'offset':
-				# derive scalar per trace from 'offsets'
-				if 'offsets' in meta:
-					return float(meta['offsets'][b, h].item())
-				return None
-			if name in meta:
-				return int(meta[name][b, h].item())
-			return None
-
-		for k1, k2 in self.pairs:
-			v1, v2 = _get(k1), _get(k2)
-			if (v1 is not None) and (v2 is not None):
-				return f'{k1}={v1}|{k2}={v2}'
-		return None
-
-
-class CrossDomainAggregator:
-	"""Accumulate per-trace predictions across domains and merge globally.
-
-	Keying uses the KeyResolver; within-domain duplicates are reduced by median.
-	"""
-
-	def __init__(
-		self,
-		key_pairs: Sequence[Sequence[str]],
-		cross_mode: Literal['mean', 'median', 'wmean'] = 'median',
-		min_domains: int = 2,
-	):
-		self.resolver = KeyResolver(key_pairs)
-		self.cross_mode = cross_mode
-		self.min_domains = int(min_domains)
-		self.pred: dict[str, dict[str, list[int]]] = defaultdict(
-			lambda: defaultdict(list)
-		)  # uid -> domain -> [idx]
-		self.conf: dict[str, dict[str, list[float]]] = defaultdict(
-			lambda: defaultdict(list)
-		)  # uid -> domain -> [pmax]
-		self.gt: dict[str, int] = {}
-		self.dt: dict[str, float] = {}
-
-	def add_batch(
-		self,
-		domain: str,
-		pred_idx: torch.Tensor,
-		prob_max: torch.Tensor,
-		meta: dict,
-		W: int,
-	):
-		B, H = pred_idx.shape
-		fb_idx = meta.get('fb_idx')
-		dt_sec = meta.get('dt_sec')
-		for b in range(B):
-			dt_b = float(dt_sec[b].item()) if dt_sec is not None else float('nan')
-			for h in range(H):
-				uid = self.resolver.get_uid(meta, b, h)
-				if uid is None:
-					continue  # cannot key this trace
-				pidx = int(pred_idx[b, h].item())
-				pmax = float(prob_max[b, h].item())
-				self.pred[uid][domain].append(pidx)
-				self.conf[uid][domain].append(pmax)
-				if fb_idx is not None:
-					self.gt[uid] = int(min(max(int(fb_idx[b, h].item()), 0), W - 1))
-				if not math.isnan(dt_b):
-					self.dt.setdefault(uid, dt_b)
-
-	def finalize(self, thr_ms: Iterable[float]) -> dict:
-		hits = {f'hit@{int(t)}': 0 for t in thr_ms}
-		n_valid = 0
-		for uid, by_dom in self.pred.items():
-			# reduce within-domain first
-			dom_vals = {}
-			dom_weights = {}
-			for d, vals in by_dom.items():
-				if not vals:
-					continue
-				if self.cross_mode == 'mean':
-					dom_vals[d] = sum(vals) / len(vals)
-				elif self.cross_mode == 'wmean':
-					ws = self.conf[uid][d]
-					wsum = sum(ws) + 1e-8
-					dom_vals[d] = (
-						sum(v * w for v, w in zip(vals, ws, strict=False)) / wsum
-					)
-				else:  # median
-					s = sorted(vals)
-					m = (
-						s[len(s) // 2]
-						if len(s) % 2 == 1
-						else 0.5 * (s[len(s) // 2 - 1] + s[len(s) // 2])
-					)
-					dom_vals[d] = m
-				dom_weights[d] = len(vals)
-
-			if len(dom_vals) < self.min_domains:
-				continue
-
-			# cross-domain merge
-			vals = list(dom_vals.values())
-			if self.cross_mode == 'mean':
-				merged = round(sum(vals) / len(vals))
-			elif self.cross_mode == 'wmean':
-				weights = [dom_weights[d] for d in dom_vals]
-				merged = round(
-					sum(v * w for v, w in zip(vals, weights, strict=False))
-					/ (sum(weights) + 1e-8)
-				)
-			else:
-				s = sorted(vals)
-				merged = round(
-					s[len(s) // 2]
-					if len(s) % 2 == 1
-					else 0.5 * (s[len(s) // 2 - 1] + s[len(s) // 2])
-				)
-
-			# evaluate
-			if uid not in self.gt or uid not in self.dt:
-				continue
-			gt = self.gt[uid]
-			dt = self.dt[uid]
-			diff = abs(int(merged) - int(gt))
-			n_valid += 1
-			for t in thr_ms:
-				tol = int(round((t / 1000.0) / dt))
-				if diff <= tol:
-					hits[f'hit@{int(t)}'] += 1
-		out = {k: (v / max(n_valid, 1)) for k, v in hits.items()}
-		out['n_tr_valid'] = n_valid
-		return out
-
-
-# Domain loaders -------------------------------------------------------------
+# -------------------------
+# Deterministic inference enumerator (windows)
+# -------------------------
 
 
 class InferenceGatherWindows(MaskedSegyGather):
-	"""Deterministic *window* enumerator for inference (subclass of MaskedSegyGather).
-
-	- Reuses MaskedSegyGather's header/mmap loading and helper (_fit_time_len)
-	- Enumerates overlapping windows of **win** traces (stride **stride**) along H
-	- No random sampling / masking / augmentation
-	- Provides metadata for later window-merge (group_id, abs_h, gather_len)
-	- Secondary sort rule:
-		* shot  : ffid → chno
-		* recv  : chno → ffid
-		* cmp   : cmp  → offset
-	"""
+	"""Deterministic window enumerator for inference (no random aug)."""
 
 	def __init__(
 		self,
@@ -421,7 +106,6 @@ class InferenceGatherWindows(MaskedSegyGather):
 		target_len: int = 6016,
 		**super_kwargs,
 	):
-		# super() で "初動" の準備（ヘッダ読み込みや _fit_time_len を利用）
 		super().__init__(
 			segy_files,
 			fb_files,
@@ -443,7 +127,7 @@ class InferenceGatherWindows(MaskedSegyGather):
 		self.pad_last = bool(pad_last)
 		self.items: list[
 			tuple[int, int, int, int, int]
-		] = []  # (file_idx, pk, start, end, Htot)
+		] = []  # (file_idx, pk, s, e, Htot)
 
 		for fi, info in enumerate(self.file_infos):
 			if domain == 'shot':
@@ -464,6 +148,7 @@ class InferenceGatherWindows(MaskedSegyGather):
 				raise ValueError(f'unsupported domain: {domain}')
 			if not k2i:
 				continue
+
 			for pk, idxs in sorted(k2i.items()):
 				prim = prim_all[idxs]
 				sec = sec_all[idxs]
@@ -475,12 +160,14 @@ class InferenceGatherWindows(MaskedSegyGather):
 				H = len(idxs)
 				if H <= 0:
 					continue
+
 				if self.win >= H:
 					starts = [0]
 				else:
 					starts = list(range(0, H - self.win + 1, self.stride))
 					if self.pad_last and (starts[-1] + self.win < H):
 						starts.append(H - self.win)
+
 				for s in starts:
 					e = min(s + self.win, H)
 					self.items.append((fi, int(pk), int(s), int(e), H))
@@ -491,6 +178,7 @@ class InferenceGatherWindows(MaskedSegyGather):
 	def __getitem__(self, i: int):
 		fi, pk, s, e, Htot = self.items[i]
 		info = self.file_infos[fi]
+
 		if self.domain == 'shot':
 			idxs = info['ffid_key_to_indices'][pk]
 			prim_vals = info['ffid_values'][idxs]
@@ -503,6 +191,7 @@ class InferenceGatherWindows(MaskedSegyGather):
 			idxs = info['cmp_key_to_indices'][pk]
 			prim_vals = info['cmp_values'][idxs]
 			sec_vals = info['offsets'][idxs]
+
 		o = np.argsort(prim_vals, kind='mergesort')
 		idxs = idxs[o]
 		sec_vals = sec_vals[o]
@@ -524,13 +213,17 @@ class InferenceGatherWindows(MaskedSegyGather):
 		x = x - x.mean(axis=1, keepdims=True)
 		x = x / (x.std(axis=1, keepdims=True) + 1e-10)
 
-		# ★ 親クラスの初動ユーティリティ（時間長合わせ）を流用
-		x, _start = self._fit_time_len(x, start=0)
+		x, _ = self._fit_time_len(x, start=0)
 		W = x.shape[1]
 
 		fb = info['fb'][idx_win].astype(np.int64)
 		fb_idx_win = fb.copy()
 		fb_idx_win[(fb_idx_win <= 0) | (fb_idx_win >= W)] = -1
+
+		abs_h = np.arange(s, s + len(idx_win), dtype=np.int64)
+		if pad_len > 0 and self.pad_last:
+			abs_h[-pad_len:] = -1
+			fb_idx_win[abs_h == -1] = -1
 
 		offsets = info['offsets'][idx_win].astype(np.float32)
 		ffid_vals = info['ffid_values'][idx_win].astype(np.int64)
@@ -540,10 +233,6 @@ class InferenceGatherWindows(MaskedSegyGather):
 			if info.get('cmp_values') is not None
 			else np.zeros(len(idx_win), dtype=np.int64)
 		)
-
-		abs_h = np.arange(s, s + len(idx_win), dtype=np.int64)
-		if pad_len > 0 and self.pad_last:
-			abs_h[-pad_len:] = -1
 
 		return {
 			'x': torch.from_numpy(x)[None, ...],
@@ -556,13 +245,14 @@ class InferenceGatherWindows(MaskedSegyGather):
 			'group_id': f'{fi}:{self.domain}:{pk}',
 			'abs_h': torch.from_numpy(abs_h),
 			'gather_len': torch.tensor(Htot, dtype=torch.int64),
+			'domain': self.domain,
 		}
 
 
 def make_valid_loader_for_domain(
 	cfg,
 	*,
-	domain: Literal['shot', 'recv', 'cmp', 'super'],
+	domain: Literal['shot', 'recv', 'cmp'],
 	batch_size: int | None = None,
 	num_workers: int | None = None,
 ) -> DataLoader:
@@ -571,67 +261,21 @@ def make_valid_loader_for_domain(
 		cfg.dataset, 'valid_field_list', None
 	)
 	if vlist_name is None:
-		raise RuntimeError(
-			'valid_field_list is not set. Define it in inference.yaml or base.yaml'
-		)
+		raise RuntimeError('valid_field_list is not set.')
 	valid_field_list = Path(__file__).parent / 'configs' / str(vlist_name)
-
 	segy_files, fb_files = collect_field_files(valid_field_list, data_root)
 
-	use_super = domain == 'super'
-	if domain == 'shot':
-		pk = ('ffid',)
-	elif domain == 'recv':
-		pk = ('chno',)
-	elif domain == 'cmp':
-		pk = ('cmp',)
-	elif domain == 'super':
-		pk = ('ffid',)
-	else:
-		raise ValueError(f'unknown domain: {domain}')
-
-	if domain in ('shot', 'recv', 'cmp'):
-		ds = InferenceGatherWindows(
-			segy_files,
-			fb_files,
-			domain=domain,
-			win=int(getattr(cfg.infer, 'win_size_traces', 128)),
-			stride=int(getattr(cfg.infer, 'win_stride_traces', 64)),
-			pad_last=bool(getattr(cfg.infer, 'win_pad_last', True)),
-			target_len=int(getattr(cfg.dataset, 'target_len', 6016)),
-			use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
-			header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
-		)
-	else:
-		# super domain keeps MaskedSegyGather behavior (may use superwindow)
-		ds = MaskedSegyGather(
-			segy_files,
-			fb_files,
-			use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
-			header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
-			primary_keys=pk,
-			primary_key_weights=None,
-			use_superwindow=bool(
-				getattr(cfg.dataset, 'use_superwindow', False) or use_super
-			),
-			sw_halfspan=int(getattr(cfg.dataset, 'sw_halfspan', 0)),
-			sw_prob=1.0,
-			mask_ratio=0.0,
-			mask_mode=str(getattr(cfg.dataset, 'mask_mode', 'replace')),
-			mask_noise_std=float(getattr(cfg.dataset, 'mask_noise_std', 1.0)),
-			pick_ratio=1.0,
-			target_len=int(getattr(cfg.dataset, 'target_len', 6016)),
-			flip=False,
-			augment_time_prob=0.0,
-			augment_time_range=(1.0, 1.0),
-			augment_space_prob=0.0,
-			augment_space_range=(1.0, 1.0),
-			augment_freq_prob=0.0,
-			target_mode='fb_seg',
-			label_sigma=float(getattr(cfg.dataset, 'label_sigma', 1.0)),
-			reject_fblc=bool(getattr(cfg.dataset, 'reject_fblc', False)),
-		)
-
+	ds = InferenceGatherWindows(
+		segy_files,
+		fb_files,
+		domain=domain,
+		win=int(getattr(cfg.infer, 'win_size_traces', 128)),
+		stride=int(getattr(cfg.infer, 'win_stride_traces', 64)),
+		pad_last=bool(getattr(cfg.infer, 'win_pad_last', True)),
+		target_len=int(getattr(cfg.dataset, 'target_len', 6016)),
+		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
+		header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
+	)
 	bs = int(
 		batch_size or getattr(cfg.infer, 'batch_size', getattr(cfg, 'batch_size', 1))
 	)
@@ -641,43 +285,24 @@ def make_valid_loader_for_domain(
 
 	def _collate(batch):
 		b0 = batch[0]
-		if isinstance(b0, dict):
-			# tensor input
-			if 'x' in b0:
-				x = torch.stack([b['x'] for b in batch])
-			else:
-				xkey = (
-					'original'
-					if 'original' in b0
-					else ('masked' if 'masked' in b0 else None)
-				)
-				if xkey is None:
-					return b0
-				x = torch.stack([b[xkey] for b in batch])
-			# meta (tensors)
-			meta: dict = {}
-			for k in [
-				'fb_idx',
-				'offsets',
-				'dt_sec',
-				'ffid',
-				'chno',
-				'cmp',
-				'abs_h',
-				'gather_len',
-			]:
-				if k in b0:
-					try:
-						meta[k] = torch.stack([b[k] for b in batch])
-					except Exception:
-						meta[k] = torch.tensor([b[k] for b in batch])
-			# meta (non-tensors)
-			if 'group_id' in b0:
-				meta['group_id'] = [b['group_id'] for b in batch]
-			return x, None, None, meta
-		return b0
+		x = torch.stack([b['x'] for b in batch])
+		meta: dict = {}
+		for k in [
+			'fb_idx',
+			'offsets',
+			'dt_sec',
+			'ffid',
+			'chno',
+			'cmp',
+			'abs_h',
+			'gather_len',
+		]:
+			meta[k] = torch.stack([b[k] for b in batch])
+		meta['group_id'] = [b['group_id'] for b in batch]
+		meta['domain'] = b0['domain']
+		return x, None, None, meta
 
-	loader = DataLoader(
+	return DataLoader(
 		ds,
 		batch_size=bs,
 		sampler=SequentialSampler(ds),
@@ -686,20 +311,138 @@ def make_valid_loader_for_domain(
 		drop_last=False,
 		collate_fn=_collate,
 	)
-	return loader
 
 
-# Hydra main ----------------------------------------------------------------
+# -------------------------
+# Per-view accumulator (flatten to (num_traces_total, W))
+# -------------------------
 
+
+class ViewAccumulator:
+	"""Accumulate logits for one (domain, view) and evaluate once after the whole pass."""
+
+	def __init__(self):
+		self.sum_by_gid: dict[str, np.ndarray] = {}
+		self.cnt_by_gid: dict[str, np.ndarray] = {}
+		self.fb_by_gid: dict[str, np.ndarray] = {}
+		self.dt_by_gid: dict[str, np.ndarray] = {}
+		self.order: list[str] = []  # appearance order
+		self.W: int | None = None
+
+	def _ensure_gid(self, gid: str, Htot: int, W: int, dt_b: float):
+		if gid not in self.sum_by_gid:
+			self.sum_by_gid[gid] = np.zeros((Htot, W), dtype=np.float64)
+			self.cnt_by_gid[gid] = np.zeros((Htot,), dtype=np.int32)
+			self.fb_by_gid[gid] = np.full((Htot,), -1, dtype=np.int64)
+			self.dt_by_gid[gid] = np.full((Htot,), dt_b, dtype=np.float32)
+			self.order.append(gid)
+		else:
+			# Htot/W の整合性チェック
+			H_prev, W_prev = self.sum_by_gid[gid].shape
+			if H_prev != Htot or W_prev != W:
+				raise RuntimeError(
+					f'Inconsistent H/W for gid={gid}: ({H_prev},{W_prev}) vs ({Htot},{W})'
+				)
+			# dt は per-trace 上書き可（同じ値のはず）
+		if self.W is None:
+			self.W = int(W)
+		elif int(W) != self.W:
+			raise RuntimeError(f'Inconsistent W across groups: {self.W} vs {W}')
+
+	def add_batch(self, meta: dict, logits: torch.Tensor, *, view_name: str):
+		"""logits: (B,1,Hwin,W) already inverted to original order for this view."""
+		arr = logits.to(torch.float32).detach().cpu().numpy()
+		B, _, Hwin, W = arr.shape
+
+		fb_idx = meta['fb_idx'].numpy()  # (B,Hwin)
+		dt_sec = meta['dt_sec'].numpy().reshape(-1)  # (B,)
+		abs_h = meta['abs_h'].numpy()  # (B,Hwin)
+		gids = meta['group_id']
+		Htot_b = meta['gather_len'].numpy().reshape(-1)  # (B,)
+
+		for b in range(B):
+			gid = str(gids[b])
+			Htot = int(Htot_b[b])
+			dt_b = float(dt_sec[b])
+			self._ensure_gid(gid, Htot, W, dt_b)
+
+			sum_mat = self.sum_by_gid[gid]
+			cnt_vec = self.cnt_by_gid[gid]
+			fb_vec = self.fb_by_gid[gid]
+			dt_vec = self.dt_by_gid[gid]
+
+			for h in range(Hwin):
+				pos = int(abs_h[b, h])
+				if pos < 0:  # padded
+					continue
+				sum_mat[pos, :] += arr[b, 0, h, :]
+				cnt_vec[pos] += 1
+				# fb/dt の更新
+				fb_vec[pos] = int(fb_idx[b, h])
+				dt_vec[pos] = dt_b
+
+	def finalize_logits(self) -> np.ndarray:
+		"""Return (N_total_traces, W) averaged logits in the first-seen gid order."""
+		mats = []
+		for gid in self.order:
+			sum_mat = self.sum_by_gid[gid]
+			cnt_vec = self.cnt_by_gid[gid]
+			avg = sum_mat.copy()
+			nz = cnt_vec > 0
+			if nz.any():
+				avg[nz, :] = (avg[nz, :].T / cnt_vec[nz]).T
+			mats.append(avg.astype(np.float32))
+		if not mats:
+			return np.zeros((0, int(self.W or 0)), dtype=np.float32)
+		return np.concatenate(mats, axis=0)
+
+	def finalize_labels(self) -> tuple[np.ndarray, np.ndarray]:
+		"""Return (fb_idx_flat, dt_sec_flat) aligned to finalize_logits() order."""
+		fbs, dts = [], []
+		for gid in self.order:
+			fbs.append(self.fb_by_gid[gid].astype(np.int64))
+			dts.append(self.dt_by_gid[gid].astype(np.float32))
+		if not fbs:
+			return np.zeros((0,), dtype=np.int64), np.zeros((0,), dtype=np.float32)
+		return np.concatenate(fbs), np.concatenate(dts)
+
+
+def eval_view(
+	logits_2d: np.ndarray,
+	fb_idx: np.ndarray,
+	dt_sec: np.ndarray,
+	thr_ms: Sequence[float],
+) -> dict:
+	"""Evaluate Hit@{thr_ms} for one view. logits_2d: (N, W)."""
+	if logits_2d.size == 0:
+		return {f'hit@{int(t)}': 0.0 for t in thr_ms} | {'n_tr_valid': 0}
+	W = logits_2d.shape[1]
+	pred_idx = logits_2d.argmax(axis=1).astype(
+		np.int64
+	)  # argmax(logit) == argmax(sigmoid(logit))
+	valid = (fb_idx > 0) & (fb_idx < W)
+	diff = np.abs(pred_idx - fb_idx)
+	n_valid = int(valid.sum())
+
+	out = {}
+	for t in thr_ms:
+		tol = np.rint((float(t) / 1000.0) / dt_sec).astype(np.int64)
+		hit = (diff <= tol) & valid
+		out[f'hit@{int(t)}'] = float(hit.sum()) / max(n_valid, 1)
+	out['n_tr_valid'] = n_valid
+	return out
+
+
+# -------------------------
+# Hydra main
+# -------------------------
 
 from hydra import compose, initialize
 from hydra.core.global_hydra import GlobalHydra
 
 GlobalHydra.instance().clear()
-
 with initialize(config_path='configs', version_base='1.3'):
 	cfg = compose(config_name='inference')
-
 
 print('[cfg]\n' + OmegaConf.to_yaml(cfg))
 set_seed(int(getattr(cfg, 'seed', 42)))
@@ -713,161 +456,123 @@ model = build_model_from_cfg(cfg).to(device)
 ckpt = getattr(cfg.infer, 'ckpt', None)
 if ckpt is None:
 	raise RuntimeError('Please set infer.ckpt to a checkpoint path')
+print(f'[ckpt] loading {ckpt} …')
 load_checkpoint(model, ckpt)
 model.eval()
+model.use_tta = False  # disable model internal TTA
 
-# TTA view set from config (only none/hflip allowed)
-tta_views = tuple(getattr(cfg.infer, 'tta_views', ['none', 'hflip']))
+# config
+domains = list(getattr(cfg.infer, 'domains', ['shot', 'recv', 'cmp']))
+views_cfg: tuple[TTAName, ...] = tuple(
+	getattr(cfg.infer, 'tta_views', ['none', 'hflip'])
+)
 allowed = {'none', 'hflip'}
-bad = [v for v in tta_views if v not in allowed]
-if bad:
-	raise RuntimeError(
-		f'infer.tta_views contains unsupported entries (no vflip allowed): {bad}'
-	)
-
-merge = str(getattr(cfg.infer, 'merge', 'mean'))
-domains = list(getattr(cfg.infer, 'domains', ['shot', 'recv', 'cmp', 'super']))
+if any(v not in allowed for v in views_cfg):
+	raise RuntimeError(f'infer.tta_views must be subset of {allowed}')
 progress = bool(getattr(cfg.infer, 'progress', True))
 
-
-# cross-domain settings
-cross_enable = bool(getattr(cfg.infer, 'cross_merge', True))
-cross_mode = str(getattr(cfg.infer, 'cross_merge_mode', 'median'))  # mean|median|wmean
-cross_min_domains = int(getattr(cfg.infer, 'cross_min_domains', 2))
-# auto-derive cross_merge_domains from `domains` (exclude 'super' by default)
-_cm_domains = getattr(cfg.infer, 'cross_merge_domains', None)
-cross_domains = (
-	[d for d in domains if d != 'super']
-	if (_cm_domains is None or _cm_domains == [])
-	else list(_cm_domains)
-)
-id_key_pairs = getattr(
-	cfg.infer,
-	'id_key_pairs',
-	[['ffid', 'chno'], ['chno', 'ffid'], ['cmp', 'offset']],
-)
-
-# thresholds for reporting
+# thresholds
 fb_cfg = getattr(cfg.loss, 'fb_seg', None)
+if fb_cfg is None:
+	raise RuntimeError('cfg.loss.fb_seg not found')
 thr_ms = tuple(
 	float(t) for t in getattr(fb_cfg, 'hit_thresholds_ms', (0.0, 2.0, 4.0, 8.0))
 )
 
-summary = {}
-total_valid = 0
-micro_hits = defaultdict(int)
+# save option
+save_logits = bool(getattr(cfg.infer, 'save_logits', False))
+out_root_cfg = getattr(cfg.infer, 'logits_out_root', None)
+if save_logits:
+	out_root_cfg = (
+		Path(out_root_cfg or './_tta_logits') / Path(str(ckpt)).with_suffix('').name
+	)
+	out_root_cfg.mkdir(parents=True, exist_ok=True)
 
-aggregator = (
-	CrossDomainAggregator(id_key_pairs, cross_mode, min_domains=cross_min_domains)
-	if cross_enable
-	else None
-)
+# containers to return
+view_name_list = [
+	('shot', 'none'),
+	('shot', 'hflip'),
+	('recv', 'none'),
+	('recv', 'hflip'),
+	('cmp', 'none'),
+	('cmp', 'hflip'),
+]
+all_logits: list[np.ndarray] = [np.zeros((0, 0), dtype=np.float32) for _ in range(6)]
+per_view_report: dict[str, dict] = {}
 
-for domain in domains:
-	print(f'\n[domain={domain}] building loader…')
+# -------------------------
+# Main loop: per view
+# -------------------------
+
+
+def run_one_view(domain: str, view: TTAName) -> tuple[np.ndarray, dict]:
 	loader = make_valid_loader_for_domain(cfg, domain=domain)
-	max_batches = int(getattr(cfg.infer, 'max_batches', 0))
-	if max_batches > 0:
-		it = iter(loader)
-
-		def limited_iter():
-			for _ in range(max_batches):
-				try:
-					yield next(it)
-				except StopIteration:
-					return
-
-		eval_loader = limited_iter()
-	else:
-		eval_loader = loader
-
-	print(f'[domain={domain}] running TTA={tta_views} merge={merge}')
-	total_batches = max_batches if max_batches > 0 else len(loader)
+	acc = ViewAccumulator()
+	total_batches = len(loader)
 	pbar = tqdm(
 		total=total_batches,
-		desc=f'[{domain}] infer',
+		desc=f'[{domain}:{view}] infer',
 		unit='batch',
 		leave=False,
 		disable=not progress,
 	)
-	# per-domain eval while optionally accumulating for cross-merge
+
 	model.eval()
-	hit_counts = {f'hit@{int(t)}': 0 for t in thr_ms}
-	n_valid_total = 0
-
-	for x, _teacher, _mask, meta in eval_loader:
+	for x, _t, _m, meta in loader:
 		x = x.to(device, non_blocking=True)
-		B, C, H, W = x.shape
+		# build input (offset channel if requested)
+		x_in = x
+		if getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
+			offs = make_offset_channel(x, meta['offsets'])
+			x_in = torch.cat([x, offs.to(device=x.device, dtype=x.dtype)], dim=1)
 
-		pred_idx, prob_max = predict_with_tta(
-			model,
-			x,
-			meta,
-			cfg,
-			device=device,
-			tta_views=tta_views,
-			merge=merge,
-			use_amp=use_amp,
+		# run single view
+		dev_type = 'cuda' if x.is_cuda else 'cpu'
+		with autocast(device_type=dev_type, enabled=use_amp):
+			xv = apply_view(x_in, view)
+			logit = model(xv)  # (B,1,H,W)
+			logit = invert_view(logit, view)  # back to original trace order
+
+		acc.add_batch(meta, logit, view_name=view)
+		pbar.update(1)
+
+	pbar.close()
+
+	# finalize & evaluate
+	logits_2d = acc.finalize_logits()  # (N, W)
+	fb_idx, dt_sec = acc.finalize_labels()
+	report = eval_view(logits_2d, fb_idx, dt_sec, thr_ms)
+	return logits_2d, report
+
+
+for dom, vw in view_name_list:
+	if dom not in domains:
+		continue
+	logits_2d, rep = run_one_view(dom, vw)
+	idx = view_name_list.index((dom, vw))
+	all_logits[idx] = logits_2d
+	per_view_report[f'{dom}_{vw}'] = rep
+
+	# save only the 2D logits per view (no UID分割保存)
+	if save_logits:
+		out_path = Path(out_root_cfg) / f'{dom}_{vw}.npy'
+		np.save(out_path, logits_2d.astype(np.float32))
+		print(f'[save] {dom}_{vw} -> {out_path} shape={logits_2d.shape}')
+
+# -------------------------
+# Final prints
+# -------------------------
+
+print('\n=== Per-view report (Hit@ms) ===')
+for dom, vw in view_name_list:
+	key = f'{dom}_{vw}'
+	if key in per_view_report:
+		r = per_view_report[key]
+		print(
+			f'{key:>11}: '
+			+ ' '.join([f'hit{int(t)}={r.get(f"hit@{int(t)}", 0):.3f}' for t in thr_ms])
+			+ f' (n={r.get("n_tr_valid", 0)})'
 		)
 
-		fb_idx = meta['fb_idx'].to(device)
-		valid = (fb_idx > 0) & (fb_idx < W)
-		dt_sec = meta['dt_sec'].to(device).view(B)
-		tol_samp = [
-			torch.round(torch.tensor(t / 1000.0, device=device) / dt_sec).to(torch.long)
-			for t in thr_ms
-		]
-		fb_idx = fb_idx.clamp(0, W - 1)
-
-		diff = (pred_idx - fb_idx).abs()
-		n_valid_total += int(valid.sum().item())
-
-		for t, tol in zip(thr_ms, tol_samp, strict=False):
-			tol_bh = tol.view(B, 1).expand_as(diff)
-			hit = (diff <= tol_bh) & valid
-			hit_counts[f'hit@{int(t)}'] += int(hit.sum().item())
-
-		# accumulate for cross-domain merge if this domain is selected
-		if aggregator is not None and (domain in cross_domains):
-			aggregator.add_batch(domain, pred_idx.cpu(), prob_max.cpu(), meta, W)
-
-		if pbar is not None:
-			if n_valid_total > 0:
-				h8 = hit_counts.get('hit@8', 0) / max(n_valid_total, 1)
-				pbar.set_postfix(h8=f'{h8:.3f}', n=n_valid_total)
-			pbar.update(1)
-
-	if pbar is not None:
-		pbar.close()
-
-	res = {k: (v / max(n_valid_total, 1)) for k, v in hit_counts.items()}
-	res['n_tr_valid'] = n_valid_total
-
-	summary[domain] = res
-	total_valid += int(res.get('n_tr_valid', 0))
-	for k in [k for k in res if k.startswith('hit@')]:
-		micro_hits[k] += int(round(res[k] * max(res.get('n_tr_valid', 0), 1)))
-	print(f'[domain={domain}] -> {res}')
-
-micro_avg = {k: (v / max(total_valid, 1)) for k, v in micro_hits.items()}
-
-print('\n=== Summary ===')
-for d, r in summary.items():
-	print(
-		f'{d:>7}: hit0={r.get("hit@0", 0):.3f} hit2={r.get("hit@2", 0):.3f} hit4={r.get("hit@4", 0):.3f} hit8={r.get("hit@8", 0):.3f} (n={r.get("n_tr_valid", 0)})'
-	)
-print(
-	f'micro : hit0={micro_avg.get("hit@0", 0):.3f} hit2={micro_avg.get("hit@2", 0):.3f} hit4={micro_avg.get("hit@4", 0):.3f} hit8={micro_avg.get("hit@8", 0):.3f} (n={total_valid})'
-)
-
-# cross-domain merge result over entire survey
-if aggregator is not None:
-	cross_res = aggregator.finalize(thr_ms)
-	print(
-		'\n[cross-merge] domains='
-		+ ','.join(cross_domains)
-		+ f' mode={cross_mode} min_domains={cross_min_domains}'
-	)
-	print(
-		f'cross : hit0={cross_res.get("hit@0", 0):.3f} hit2={cross_res.get("hit@2", 0):.3f} hit4={cross_res.get("hit@4", 0):.3f} hit8={cross_res.get("hit@8", 0):.3f} (n={cross_res.get("n_tr_valid", 0)})'
-	)
+# all_logits is now:
+# [0]: shot_none, [1]: shot_hflip, [2]: chno_none, [3]: chno_hflip, [4]: cmp_none, [5]: cmp_hflip

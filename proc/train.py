@@ -26,9 +26,7 @@ from proc.util.ema import ModelEMA
 from proc.util.eval import eval_synthe, val_one_epoch_snr
 from proc.util.loss import make_criterion, make_fb_seg_criterion
 from proc.util.model import NetAE, adjust_first_conv_padding
-from proc.util.model_utils import (
-	inflate_input_convs_to_2ch,
-)
+from proc.util.model_utils import inflate_input_convs_to_2ch
 from proc.util.predict import cover_all_traces_predict_chunked
 from proc.util.rng_util import worker_init_fn
 from proc.util.train_loop import train_one_epoch
@@ -54,7 +52,7 @@ def load_state_dict_excluding(
 	return missing, unexpected
 
 
-SEED =
+SEED = 0
 set_seed(SEED)
 rng = np.random.default_rng()
 
@@ -123,7 +121,7 @@ train_dataset = MaskedSegyGather(
 	fblc_thresh_ms=cfg.dataset.fblc_thresh_ms,
 	fblc_min_pairs=cfg.dataset.fblc_min_pairs,
 	fblc_apply_on=cfg.dataset.fblc_apply_on,
-	valid=True,
+	valid=False,
 )
 
 if task == 'fb_seg':
@@ -144,6 +142,8 @@ if task == 'fb_seg':
 		augment_time_prob=0.0,
 		augment_space_prob=0.0,
 		augment_freq_prob=0.0,
+		valid=True,
+		verbose=False,
 	)
 elif task == 'recon':
 	valid_dataset = MaskedSegyGather(
@@ -164,6 +164,7 @@ elif task == 'recon':
 		augment_space_prob=0.0,
 		augment_freq_prob=0.0,
 		reject_fblc=False,
+		valid=True,
 	)
 val_src = copy.copy(valid_dataset)  # file_infos を共有
 val_src.flip = False  # ここだけ無反転で取りたい場合

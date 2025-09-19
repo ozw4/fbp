@@ -166,6 +166,7 @@ class MaskedSegyGather(Dataset):
 		fblc_min_pairs: int = 16,
 		fblc_apply_on: Literal['any', 'super_only'] = 'any',
 		valid: bool = False,
+		verbose: bool = False,
 	) -> None:
 		"""Initialize dataset.
 
@@ -214,6 +215,7 @@ class MaskedSegyGather(Dataset):
 		self.fblc_min_pairs = int(fblc_min_pairs)
 		self.fblc_apply_on = fblc_apply_on
 		self.valid = valid
+		self.verbose = verbose
 		self.file_infos = []
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
@@ -463,14 +465,19 @@ class MaskedSegyGather(Dataset):
 
 			key = random.choice(unique_keys)
 			indices = key_to_indices[key]
+
 			apply_super = False
+			did_super = False  # ← このサンプルで実際に superwindow を適用したかどうか
+
 			# === superwindow (distance-KNN for ffid/chno; index-window fallback) ===
 			if self.use_superwindow and self.sw_halfspan > 0:
 				apply_super = True
 				if hasattr(self, 'sw_prob') and float(self.sw_prob) < 1.0:
 					if random.random() >= float(self.sw_prob):
 						apply_super = False
+
 				if apply_super:
+					did_super = True  # ← 実際に superwindow を使ったのでフラグON
 					K = 1 + 2 * int(self.sw_halfspan)
 
 					def _index_window():
@@ -547,13 +554,10 @@ class MaskedSegyGather(Dataset):
 				if not apply_super and not self.valid:
 					if key_name == 'ffid':
 						secondary = random.choice(('chno', 'offset'))
-						# secondary = 'chno'
 					elif key_name == 'chno':
 						secondary = random.choice(('ffid', 'offset'))
-						# secondary = 'ffid'
 					else:  # 'cmp'
 						secondary = 'offset'
-
 				elif apply_super and not self.valid:
 					secondary = 'offset'
 				elif self.valid:
@@ -687,19 +691,21 @@ class MaskedSegyGather(Dataset):
 			# FBLC gate (before masking/target/tensorization)
 			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
 			if self.reject_fblc:
-				apply_gate = self.fblc_apply_on == 'any'
-				if self.fblc_apply_on == 'super_only':
-					apply_gate = bool(
-						getattr(self, 'use_superwindow', False)
-						and getattr(self, 'sw_halfspan', 0) > 0
-					)
+				# super_only の場合は「実際に superwindow を使ったサンプル」に限って判定
+				if self.fblc_apply_on == 'any':
+					apply_gate = True
+				elif self.fblc_apply_on == 'super_only':
+					apply_gate = did_super
+				else:
+					apply_gate = False
+
 				if apply_gate:
 					v = fb_idx_win.astype(np.float64)
 					valid = v >= 0
 					m = valid[1:] & valid[:-1]
 					valid_pairs = int(m.sum())
 
-					# ★ ここを「棄却」に変更（以前は判定スキップ）
+					# enough valid neighbor pairs?
 					if valid_pairs < int(self.fblc_min_pairs):
 						continue  # サンプル棄却して再抽選
 
@@ -707,11 +713,17 @@ class MaskedSegyGather(Dataset):
 					p = float(np.percentile(diffs, float(self.fblc_percentile)))
 					p_ms = p * float(dt_eff_sec) * 1000.0
 					if p_ms > float(self.fblc_thresh_ms):
-						# print(
-						# f'Rejecting gather {info["path"]} key={key_name}:{key} '
-						# f'for FBLC {p_ms:.1f}ms > {self.fblc_thresh_ms}ms'
-						# )
+						if self.verbose:
+							print(
+								f'Rejecting gather {info["path"]} key={key_name}:{key} '
+								f'for FBLC {p_ms:.1f}ms > {self.fblc_thresh_ms}ms'
+							)
 						continue  # reject and resample
+					if self.verbose:
+						print(
+							f'Accepted gather {info["path"]} key={key_name}:{key} '
+							f'for FBLC {p_ms:.1f}ms <= {self.fblc_thresh_ms}ms'
+						)
 
 			# masking (after acceptance)
 			H = x.shape[0]
@@ -766,6 +778,10 @@ class MaskedSegyGather(Dataset):
 				'file_path': info['path'],
 				'primary_unique': primary_unique_str,
 			}
+			if self.verbose:
+				sample['did_superwindow'] = did_super
+				print(f'primary_key: {key_name}={primary_unique_str}')
+				print(f'secondary_key: {secondary_key}')
 			if target_t is not None:
 				sample['target'] = target_t
 
