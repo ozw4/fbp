@@ -33,7 +33,7 @@ from tqdm.auto import tqdm
 from proc.util.dataset import MaskedSegyGather
 from proc.util.features import make_offset_channel_phys, make_time_channel
 from proc.util.model import NetAE, adjust_first_conv_padding
-from proc.util.model_utils import inflate_input_convs_to_2ch
+from proc.util.model_utils import inflate_input_convs_to_nch, inflate_input_convs_to_2ch
 from proc.util.utils import collect_field_files, set_seed
 
 # -------------------------
@@ -51,8 +51,21 @@ def build_model_from_cfg(cfg) -> torch.nn.Module:
 	)
 	if getattr(cfg.model, 'first_conv_same_pad', False):
 		adjust_first_conv_padding(model.backbone, padding=(1, 1))
-	if getattr(cfg.model, 'use_offset_input', False):
-		inflate_input_convs_to_2ch(model)
+	if getattr(cfg.model, 'use_offset_input', False) and getattr(
+		cfg.model, 'use_time_input', True
+	):
+		inflate_input_convs_to_nch(
+			model,
+			3,
+			verbose=True,
+			init_mode='duplicate',
+		)
+	elif getattr(cfg.model, 'use_offset_input', False):
+		inflate_input_convs_to_2ch(
+			model,
+			verbose=True,
+			init_mode='duplicate',
+		)
 	return model
 
 
