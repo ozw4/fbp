@@ -9,7 +9,14 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: edgenext_small.usi_in1k_in1k_default1_swprob05_secondrand'
+suffix: edgenext_small.usi_in1k_in1k_default1_swprob05_secondrand
+
+norm:
+  offset_mode: log1p       # or "linear"
+  offset_clip_hi: 1.5
+  x95_m: 3000.0            # placeholder; will be computed from train set
+  t95_ms: 6000.0           # placeholder; will be computed from train set
+  time_clip_hi: 1.5
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -17,6 +24,7 @@ drop_path_rate: 0
 
 model:
   use_offset_input: true
+  use_time_input: true
 
 # 一般設定
 num_workers: 16
