@@ -13,7 +13,7 @@ infer:
   valid_field_list: ${valid_field_list}
 
   # 必須: チェックポイントパス（HydraのCLIで override 可能）
-  ckpt: /workspace/proc/result/fb_seg/train_field_list_wotstkres_edgenext_small.usi_in1k_in1k_default1_swprob05_secondvalid'/model_80.pth
+  ckpt: /workspace/proc/result/fb_seg/train_field_list_wotstkres_edgenext_small.usi_in1k_in1k_default1_swprob05_secondvalid/model_80.pth
   # 評価ドメイン（shot=FFID, recv=CHNO, cmp=CMP, super=shotに対するsuperwindow）
   domains: [shot, recv, cmp]
 
@@ -45,3 +45,6 @@ infer:
   cross_merge: true                 # 有効化
   cross_merge_mode: logits_sum        # mean | median | wmean（confidence重み）
   cross_min_domains: 2              # 採用に必要な最小ドメイン数
+# Inference model overrides
+model:
+  use_time_input: true
