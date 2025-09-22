@@ -2,7 +2,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from proc.util.features import make_offset_channel
+from proc.util.features import (
+	make_offset_channel_phys,
+	make_time_channel,
+)
 from proc.util.velocity_mask import make_velocity_feasible_mask
 
 __all__ = ['val_one_epoch_fbseg', 'visualize_fb_seg_triplet']
@@ -99,25 +102,51 @@ def val_one_epoch_fbseg(
 	hit8 = 0
 	n_valid = 0
 	cfg_fb = cfg.loss.fb_seg
+
 	for i, (x, _, _, meta) in enumerate(val_loader):
-		x = x.to(device, non_blocking=True)
-		fb = meta['fb_idx'].to(device)
+		x = x.to(device, non_blocking=True)  # (B,1,H,W)
+		fb = meta['fb_idx'].to(device)  # (B,H)
 		x_in = x
-		if (
-			getattr(cfg, 'model', None)
-			and getattr(cfg.model, 'use_offset_input', False)
-			and ('offsets' in meta)
-		):
-			offs_ch = make_offset_channel(x, meta['offsets'])
-			x_in = torch.cat([x, offs_ch], dim=1)
-		logits = model(x_in)
-		logit_raw = logits.squeeze(1)
+
+		# ----- match training/inference: offset(time) channels -----
+		cfg_obj = cfg if cfg is not None else getattr(model, 'cfg', None)
+		use_offset = bool(
+			getattr(getattr(cfg_obj, 'model', None), 'use_offset_input', False)
+		)
+		use_time = bool(
+			getattr(getattr(cfg_obj, 'model', None), 'use_time_input', False)
+		)
+
+		if (use_offset or use_time) and ('offsets' in meta):
+			offs_ch = make_offset_channel_phys(
+				x_like=x,
+				offsets_m=meta['offsets'],  # (B,H)
+				x95_m=cfg_obj.norm.x95_m,
+				mode=getattr(cfg_obj.norm, 'offset_mode', 'log1p'),
+				clip_hi=getattr(cfg_obj.norm, 'offset_clip_hi', 1.5),
+			).to(device=x.device, dtype=x.dtype)
+
+			if use_time and ('dt_sec' in meta):
+				time_ch = make_time_channel(
+					x_like=x,
+					dt_sec=meta['dt_sec'],  # scalar or (B,)
+					t95_ms=cfg_obj.norm.t95_ms,
+					clip_hi=getattr(cfg_obj.norm, 'time_clip_hi', 1.5),
+				).to(device=x.device, dtype=x.dtype)
+				x_in = torch.cat([x, offs_ch, time_ch], dim=1)
+			else:
+				# ※ ユーザー方針: time-only ケースは想定しない（オフセット無しで time だけは無視）
+				x_in = torch.cat([x, offs_ch], dim=1)
+
+		# Forward
+		logits = model(x_in)  # (B,1,H,W)
+		logit_raw = logits.squeeze(1)  # (B,H,W)
 		B, H, W = logit_raw.shape
 
-		# === Always apply velocity-cone mask (match training) ===
+		# ----- velocity-cone mask（学習と合わせて log 加算）-----
 		velmask = make_velocity_feasible_mask(
-			offsets=meta['offsets'],
-			dt_sec=meta['dt_sec'],
+			offsets=meta['offsets'].to(device),
+			dt_sec=meta['dt_sec'].to(device).view(B),
 			W=W,
 			vmin=float(getattr(cfg_fb, 'vmin_mask', 500.0)),
 			vmax=float(getattr(cfg_fb, 'vmax_mask', 10000.0)),
@@ -127,7 +156,7 @@ def val_one_epoch_fbseg(
 			device=logit_raw.device,
 			dtype=logit_raw.dtype,
 		)
-		# fp32で安全にlogを作ってからdtypeを合わせる
+		# fp32で安全にlogを作ってから dtype を戻す
 		vm32 = velmask.to(torch.float32)
 		has_any = vm32.sum(dim=-1, keepdim=True) > 0
 		vm32 = torch.where(has_any, vm32, torch.ones_like(vm32))
@@ -135,9 +164,11 @@ def val_one_epoch_fbseg(
 		logmask32 = torch.log(vm32.clamp_min(eps))
 		logit = logit_raw + logmask32.to(logit_raw.dtype)
 
+		# Softmax + metrics
 		tau = float(getattr(cfg_fb, 'tau', 1.0))
-		prob = torch.softmax(logit / tau, dim=-1)
-		pred = prob.argmax(dim=-1)
+		prob = torch.softmax(logit / tau, dim=-1)  # (B,H,W)
+		pred = prob.argmax(dim=-1)  # (B,H)
+
 		valid = fb >= 0
 		diff = (pred - fb).abs()
 		hit0 += ((diff == 0) & valid).sum().item()
@@ -145,6 +176,8 @@ def val_one_epoch_fbseg(
 		hit4 += ((diff <= 4) & valid).sum().item()
 		hit8 += ((diff <= 8) & valid).sum().item()
 		n_valid += valid.sum().item()
+
+		# Optional viz
 		if visualize and (i in viz_batches):
 			gs = int(epoch) if isinstance(epoch, int) else 0
 			fig = visualize_fb_seg_triplet(
@@ -157,6 +190,7 @@ def val_one_epoch_fbseg(
 				global_step=gs,
 			)
 			plt.close(fig)
+
 	return {
 		'hit@0': float(hit0) / max(n_valid, 1),
 		'hit@2': float(hit2) / max(n_valid, 1),
