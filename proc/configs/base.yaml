@@ -9,7 +9,14 @@ valid_field_list: train_field_list_tstkres.txt
 file_size: null
 
 # パス関連
-suffix: edgenext_small.usi_in1k_in1k_default1_swprob05_secondrand'
+suffix: edgenext_small.usi_in1k_in1k_default1_shot_secondvalid_reallinoffset
+
+norm:
+  offset_mode: log1p      # or "linear"
+  offset_clip_hi: 1.5
+  x95_m: 8622.0            # placeholder; will be computed from train set
+  t95_ms: 16000.0           # placeholder; will be computed from train set
+  time_clip_hi: 1.5
 
 # モデル関連（共通部分）
 backbone: edgenext_small.usi_in1k  # caformer_b36.sail_in22k_ft_in1k |edgenext_small.usi_in1k convnextv2_base.fcmae_ft_in22k_in1k_384
@@ -17,6 +24,7 @@ drop_path_rate: 0
 
 model:
   use_offset_input: true
+  use_time_input: true
 
 # 一般設定
 num_workers: 16
@@ -80,7 +88,7 @@ snr:
 
 dataset:
   primary_keys: [ffid, chno, cmp]        # 例: [ffid, chno, cmp] / [ffid] / [chno, cmp]
-  primary_key_weights: [0.33,0.33,0.33]  # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
+  primary_key_weights: null # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
   use_superwindow: true        # true で近傍 primary を結合（非平均）
   sw_halfspan: 1                # ±いくつ結合するか（0で無効）
   sw_prob: 0.5
