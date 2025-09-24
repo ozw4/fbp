@@ -107,17 +107,17 @@ def train_one_epoch(
 	device,
 	epoch,
 	print_freq,
-        writer=None,
-        use_offset_input: bool = False,
-        use_amp=True,
-        scaler=None,
-        ema=None,
-        gradient_accumulation_steps=1,
-        max_shift=5,
-        step: int = 0,
-        freeze_epochs: int = 0,
-        unfreeze_steps: int = 1,
-        cfg=None,
+	writer=None,
+	use_offset_input: bool = False,
+	use_amp=True,
+	scaler=None,
+	ema=None,
+	gradient_accumulation_steps=1,
+	max_shift=5,
+	step: int = 0,
+	freeze_epochs: int = 0,
+	unfreeze_steps: int = 1,
+	cfg=None,
 ):
 	"""Run one training epoch."""
 	if getattr(model, '_transfer_loaded', False) and freeze_epochs > 0:
@@ -204,6 +204,7 @@ def train_one_epoch(
 			with autocast(device_type=device_type, enabled=use_amp):
 				x_in = x_masked
 				cfg_obj = cfg if cfg is not None else getattr(model, 'cfg', None)
+
 				if (
 					use_offset_input
 					and cfg_obj is not None
@@ -228,14 +229,14 @@ def train_one_epoch(
 					offs_ch = make_offset_channel_phys(
 						x_masked,
 						meta['offsets'],
-						x95_m=getattr(norm_cfg, 'x95_m'),
+						x95_m=norm_cfg.x95_m,
 						mode=getattr(norm_cfg, 'offset_mode', 'log1p'),
 						clip_hi=getattr(norm_cfg, 'offset_clip_hi', 1.5),
 					)
 					time_ch = make_time_channel(
 						x_masked,
 						meta['dt_sec'],
-						t95_ms=getattr(norm_cfg, 't95_ms'),
+						t95_ms=norm_cfg.t95_ms,
 						clip_hi=getattr(norm_cfg, 'time_clip_hi', 1.5),
 					)
 					x_in = torch.cat([x_masked, offs_ch, time_ch], dim=1)
