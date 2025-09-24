@@ -40,9 +40,9 @@ from torch.amp.autocast_mode import autocast
 from torch.utils.data import DataLoader, SequentialSampler
 
 from proc.util.dataset import MaskedSegyGather
-from proc.util.features import make_offset_channel
+from proc.util.features import make_offset_channel_phys, make_time_channel
 from proc.util.model import NetAE, adjust_first_conv_padding
-from proc.util.model_utils import inflate_input_convs_to_2ch
+from proc.util.model_utils import inflate_input_convs_to_nch, inflate_input_convs_to_2ch
 from proc.util.utils import collect_field_files, set_seed
 from proc.util.velocity_mask import (
 	apply_velocity_mask_to_logits,
@@ -67,8 +67,21 @@ def build_model_from_cfg(cfg) -> torch.nn.Module:
 	if getattr(cfg.model, 'first_conv_same_pad', False):
 		adjust_first_conv_padding(model.backbone, padding=(1, 1))
 
-	if getattr(cfg.model, 'use_offset_input', False):
-		inflate_input_convs_to_2ch(model)
+	if getattr(cfg.model, 'use_offset_input', False) and getattr(
+		cfg.model, 'use_time_input', True
+	):
+		inflate_input_convs_to_nch(
+			model,
+			3,
+			verbose=True,
+			init_mode='duplicate',
+		)
+	elif getattr(cfg.model, 'use_offset_input', False):
+		inflate_input_convs_to_2ch(
+			model,
+			verbose=True,
+			init_mode='duplicate',
+		)
 
 	return model
 
@@ -125,22 +138,37 @@ def _merge_stack(
 
 @torch.no_grad()
 def predict_with_tta(
-	model: torch.nn.Module,
-	x: torch.Tensor,
-	meta: dict,
-	cfg,
-	*,
-	device: torch.device,
-	tta_views: Iterable[TTAName] = ('none', 'hflip'),
-	merge: Literal['mean', 'median'] = 'mean',
-	use_amp: bool = True,
+        model: torch.nn.Module,
+        x: torch.Tensor,
+        meta: dict,
+        cfg,
+        *,
+        device: torch.device,
+        tta_views: Iterable[TTAName] = ('none', 'hflip'),
+        merge: Literal['mean', 'median'] = 'mean',
+        use_amp: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-	"""Return (pred_idx, prob_max) for a batch."""
-	B, C, H, W = x.shape
-	x_in = x
-	if getattr(cfg.model, 'use_offset_input', False) and ('offsets' in meta):
-		offs_ch = make_offset_channel(x, meta['offsets'])
-		x_in = torch.cat([x, offs_ch.to(device=x.device, dtype=x.dtype)], dim=1)
+        """Return (pred_idx, prob_max) for a batch."""
+        B, C, H, W = x.shape
+        x_in = x
+        use_offset = getattr(cfg.model, 'use_offset_input', False)
+        use_time = getattr(cfg.model, 'use_time_input', False)
+        if (use_offset or use_time) and ('offsets' in meta):
+                offs_ch = make_offset_channel_phys(
+                        x, meta['offsets'],
+                        x95_m=cfg.norm.x95_m,
+                        mode=getattr(cfg.norm, 'offset_mode', 'log1p'),
+                        clip_hi=getattr(cfg.norm, 'offset_clip_hi', 1.5),
+                ).to(device=x.device, dtype=x.dtype)
+                if use_time and ('dt_sec' in meta):
+                        time_ch = make_time_channel(
+                                x, meta['dt_sec'],
+                                t95_ms=cfg.norm.t95_ms,
+                                clip_hi=getattr(cfg.norm, 'time_clip_hi', 1.5),
+                        ).to(device=x.device, dtype=x.dtype)
+                        x_in = torch.cat([x, offs_ch, time_ch], dim=1)
+                else:
+                        x_in = torch.cat([x, offs_ch], dim=1)
 
 	tta_logits = []
 	dev_type = 'cuda' if x.is_cuda else 'cpu'
