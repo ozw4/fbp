@@ -144,6 +144,120 @@ def _replace_seq_conv_bn_to_2x(
 			print(f'[inflate] {seq.__class__.__name__}[{bn_idx}]: BN channels → 2')
 
 
+def _find_backbone_first_conv(bb: nn.Module) -> Tuple[nn.Conv2d | None, str]:
+	"""Find the first Conv2d that consumes the raw feature map inside a backbone.
+	Supports common patterns:
+	  - stem_0 (ConvNeXt/timm FeatureListNet variants)
+	  - stem.conv / stem (Caformer系 Stem)
+	  - patch_embed.proj (ViT/Hybrid)
+	  - conv1 (ResNet系)
+	As a fallback, return the first nn.Conv2d found by named_modules() preorder.
+	Returns (conv, qualified_name) or (None, '').
+	"""
+	# 1) Named attribute candidates by priority
+	try_candidates = []
+	if hasattr(bb, 'stem_0'):
+		try_candidates.append(('stem_0', bb.stem_0))
+	if hasattr(bb, 'stem'):
+		stem = bb.stem
+		try_candidates.append(('stem', stem))
+		if hasattr(stem, 'conv'):
+			try_candidates.append(('stem.conv', stem.conv))
+		if hasattr(stem, 'proj'):
+			try_candidates.append(('stem.proj', stem.proj))
+	if hasattr(bb, 'patch_embed') and hasattr(bb.patch_embed, 'proj'):
+		try_candidates.append(('patch_embed.proj', bb.patch_embed.proj))
+	if hasattr(bb, 'conv1'):
+		try_candidates.append(('conv1', bb.conv1))
+
+	for qname, obj in try_candidates:
+		if isinstance(obj, nn.Conv2d):
+			return obj, f'backbone.{qname}'
+
+	# 2) Generic fallback: first Conv2d by preorder (skip grouped/depthwise)
+	for qname, m in bb.named_modules():
+		if isinstance(m, nn.Conv2d) and m.groups == 1:
+			return m, f'backbone.{qname}'
+
+	return None, ''
+
+
+def _inflate_conv_in_channels(
+	conv: nn.Conv2d,
+	target_in_ch: int,
+	*,
+	verbose: bool,
+	init_mode: str,
+	name: str,
+) -> bool:
+	"""Inflate a Conv2d's input channels to `target_in_ch` in-place, preserving out_channels.
+	- init_mode: 'duplicate' | 'random' | 'zeros'
+	  * 'duplicate': tile existing kernels across new channels, then scale by (old_in / new_in)
+	  * 'random'   : kaiming_normal_ for the whole new weight tensor
+	  * 'zeros'    : all zeros
+	Returns:
+	  True if weights were changed, False if already matched (or skipped).
+	"""
+	assert isinstance(conv, nn.Conv2d)
+	old_in = conv.in_channels
+	out_ch, kH, kW = conv.out_channels, conv.kernel_size[0], conv.kernel_size[1]
+
+	if old_in == target_in_ch:
+		if verbose:
+			print(f'[inflate] keep in={old_in} for {name}')
+		return False
+
+	if old_in > target_in_ch:
+		if verbose:
+			print(f'[inflate][WARN] skip {name}: in={old_in} > target={target_in_ch}')
+		return False
+
+	# depthwise/grouped conv は対象外
+	assert conv.groups == 1, (
+		f'Cannot inflate grouped/depthwise convs (groups={conv.groups})'
+	)
+
+	# 重み生成ロジック
+	if '_make_inflated_weight' in globals():
+		new_weight = _make_inflated_weight(conv, target_in_ch, init_mode)
+	else:
+		# フォールバック: 依存関数が無い環境でも動くようにここで生成
+		device, dtype = conv.weight.device, conv.weight.dtype
+		if init_mode == 'zeros':
+			new_weight = torch.zeros(
+				(out_ch, target_in_ch, kH, kW), device=device, dtype=dtype
+			)
+		elif init_mode == 'random':
+			new_weight = torch.empty(
+				(out_ch, target_in_ch, kH, kW), device=device, dtype=dtype
+			)
+			nn.init.kaiming_normal_(new_weight, nonlinearity='relu')
+		elif init_mode == 'duplicate':
+			old_w = conv.weight.data  # (out_ch, old_in, kH, kW)
+			repeats = target_in_ch // old_in
+			remainder = target_in_ch % old_in
+			chunks = []
+			if repeats > 0:
+				chunks.append(old_w.repeat(1, repeats, 1, 1))
+			if remainder > 0:
+				mean_w = old_w.mean(dim=1, keepdim=True)
+				chunks.append(mean_w.repeat(1, remainder, 1, 1))
+			new_weight = torch.cat(chunks, dim=1) if len(chunks) > 1 else chunks[0]
+			# fan-in を揃えるためスケール
+			new_weight = new_weight * (float(old_in) / float(target_in_ch))
+		else:
+			raise ValueError(f"Unsupported init_mode '{init_mode}'")
+
+	# in-place swap
+	conv.in_channels = target_in_ch
+	conv.weight = nn.Parameter(new_weight)
+
+	if verbose:
+		print(f'[inflate] {name}: in {old_in}→{target_in_ch}')
+
+	return True
+
+
 def inflate_input_convs_to_2ch(
 	model: nn.Module,
 	*,
@@ -154,11 +268,11 @@ def inflate_input_convs_to_2ch(
 ) -> None:
 	"""Make the *raw-input path* truly 2ch end-to-end:
 	  - pre_down[0] and pre_down[1] convs → (in=2, out=2) ＋ 対応BNを2ch化
-	  - backbone first conv (stem_0 or patch_embed.proj) の in を 1→2 にinflate
+	  - backbone 最初の Conv を汎用に特定（stem_0 / stem.conv / patch_embed.proj / conv1 など）し in を 2ch にinflate
 
 	Tips:
 	  - 既存 1ch 重みを複製して2chへ展開（init_mode='duplicate' 推奨）
-	  - 2ch skip を使わない場合でも、backbone が 2ch を受け取れるようにしておく
+	  - Caformer 等でも最初の Conv を自動検出
 	"""
 	# (A) pre_down の 2段を 2→2 に強制
 	if fix_predown and hasattr(model, 'pre_down') and len(model.pre_down) > 0:
@@ -172,24 +286,39 @@ def inflate_input_convs_to_2ch(
 					seq, conv_idx=0, bn_idx=1, verbose=verbose, init_mode=init_mode
 				)
 
-	# (B) backbone 最初の Conv の in を 1→2
+	# (B) backbone 最初の Conv の in を 2ch に
 	if fix_backbone and hasattr(model, 'backbone'):
 		bb = model.backbone
 		conv = None
-		if hasattr(bb, 'stem_0') and isinstance(bb.stem_0, nn.Conv2d):
-			conv = bb.stem_0
-		elif (
-			hasattr(bb, 'patch_embed')
-			and hasattr(bb.patch_embed, 'proj')
-			and isinstance(bb.patch_embed.proj, nn.Conv2d)
-		):
-			conv = bb.patch_embed.proj
+		conv_name = ''
+
+		# 汎用: _find_backbone_first_conv があれば使う
+		if '_find_backbone_first_conv' in globals():
+			conv, conv_name = _find_backbone_first_conv(bb)
+
+		# 互換: 見つからなければ従来の分岐
+		if conv is None:
+			if hasattr(bb, 'stem_0') and isinstance(bb.stem_0, nn.Conv2d):
+				conv, conv_name = bb.stem_0, 'backbone.stem_0'
+			elif (
+				hasattr(bb, 'patch_embed')
+				and hasattr(bb.patch_embed, 'proj')
+				and isinstance(bb.patch_embed.proj, nn.Conv2d)
+			):
+				conv, conv_name = bb.patch_embed.proj, 'backbone.patch_embed.proj'
 
 		if conv is not None:
-			if conv.in_channels == 1:
-				_inflate_conv_in_to_2(conv, verbose=verbose, init_mode=init_mode)
+			if conv.in_channels != 2:
+				# 1→2 だけでなく任意 in→2 を安全に対応
+				_inflate_conv_in_channels(
+					conv,
+					2,
+					verbose=verbose,
+					init_mode=init_mode,
+					name=conv_name or type(conv).__name__,
+				)
 			elif verbose:
-				print(f'[inflate] backbone first conv already in={conv.in_channels}')
+				print(f'[inflate] keep in=2 for {conv_name or type(conv).__name__}')
 		elif verbose:
 			print('[inflate][WARN] backbone first Conv2d not found')
 
