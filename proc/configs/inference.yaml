@@ -13,7 +13,7 @@ infer:
   valid_field_list: ${valid_field_list}
 
   # 必須: チェックポイントパス（HydraのCLIで override 可能）
-  ckpt: /workspace/proc/result/fb_seg/train_field_list_wotstkres_edgenext_small.usi_in1k_in1k_default1_swprob05_secondvalid'/model_80.pth
+  ckpt: /workspace/proc/result/fb_seg/train_field_list_wotstkres_caformer_b36.sail_in22k_ft_in1k_finetune_augspace01_modvelmask_veltrend_unfreeze_addcmp_addsuper_secondvalid'/model_40.pth
   # 評価ドメイン（shot=FFID, recv=CHNO, cmp=CMP, super=shotに対するsuperwindow）
   domains: [shot, recv, cmp]
 
