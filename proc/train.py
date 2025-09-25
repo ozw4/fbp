@@ -52,7 +52,7 @@ def load_state_dict_excluding(
 	return missing, unexpected
 
 
-SEED = 0
+SEED = 42
 set_seed(SEED)
 rng = np.random.default_rng()
 
@@ -121,7 +121,7 @@ train_dataset = MaskedSegyGather(
 	fblc_thresh_ms=cfg.dataset.fblc_thresh_ms,
 	fblc_min_pairs=cfg.dataset.fblc_min_pairs,
 	fblc_apply_on=cfg.dataset.fblc_apply_on,
-	valid=False,
+	valid=True,
 )
 
 if task == 'fb_seg':
@@ -278,6 +278,7 @@ if task == 'recon':
 		endian='little',
 	)
 
+
 print(cfg.backbone)
 model = NetAE(
 	backbone=cfg.backbone,
@@ -338,7 +339,7 @@ lr_scheduler = WarmupCosineScheduler(
 	optimizer=optimizer,
 	warmup_steps=cfg.lr_warmup_epochs * len(train_loader),
 	total_steps=epochs * len(train_loader),
-	eta_min=1e-6,
+	eta_min=1e-10,
 )
 
 model_without_ddp = model
@@ -384,7 +385,7 @@ if cfg.resume:
 			)
 
 if getattr(cfg.model, 'use_offset_input', False):
-	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='zero')
+	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='zeros')
 
 # 3) 段階解凍のガード用フラグ
 model._transfer_loaded = transfer_loaded
