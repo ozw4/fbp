@@ -385,7 +385,7 @@ if cfg.resume:
 			)
 
 if getattr(cfg.model, 'use_offset_input', False):
-	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='zeros')
+	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='duplicate')
 
 # 3) 段階解凍のガード用フラグ
 model._transfer_loaded = transfer_loaded
