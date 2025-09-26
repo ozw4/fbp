@@ -277,6 +277,18 @@ if task == 'recon':
 		standardize=True,
 		endian='little',
 	)
+	synthe_offsets = None
+	if getattr(cfg.model, 'use_offset_input', False):
+		max_h = synthe_noisy.shape[2]
+		synthe_offsets = torch.zeros(
+			(synthe_noisy.size(0), max_h), dtype=torch.float32
+		)
+		for i, h in enumerate(Hs):
+			if h <= 0:
+				continue
+			synthe_offsets[i, :h] = torch.arange(
+				h, dtype=torch.float32
+			)
 
 
 print(cfg.backbone)
@@ -449,6 +461,7 @@ for epoch in range(cfg.start_epoch, epochs):
 			writer=valid_writer,
 			epoch=epoch,
 			is_main_process=utils.is_main_process(),
+			use_offset_input=getattr(cfg.model, 'use_offset_input', False),
 			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 			if utils.is_main_process()
 			else (),
@@ -460,6 +473,10 @@ for epoch in range(cfg.start_epoch, epochs):
 			synthe_noisy.to(device),
 			mask_noise_mode=cfg.dataset.mask_mode,
 			noise_std=cfg.dataset.mask_noise_std,
+			use_offset_input=getattr(cfg.model, 'use_offset_input', False),
+			offsets=synthe_offsets.to(device)
+			if 'synthe_offsets' in locals() and synthe_offsets is not None
+			else None,
 		)
 		synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
 		for i in range(len(synthe_noisy)):
