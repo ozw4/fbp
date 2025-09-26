@@ -4,19 +4,19 @@ defaults:
 
 # データセット
 data_root : '/home/dcuser/data/ActiveSeisField/'
-train_field_list: train_field_list_tstkres.txt
-valid_field_list: train_field_list_tstkres.txt
+train_field_list: train_field_list.txt
+valid_field_list: train_field_list.txt
 file_size: null
 
 # パス関連
 suffix: caformer_b36.sail_in22k_ft_in1k_augspace01_augtime005_addcmpchno_secondvalid'
 
 # モデル関連（共通部分）
-backbone:  caformer_b36.sail_in22k_ft_in1k  #edgenext_small.usi_in1k |caformer_b36.sail_in22k_ft_in1k
+backbone:  caformer_b36.sail_in22k_ft_in1k   #caformer_b36.sail_in22k_ft_in1k  #edgenext_small.usi_in1k |caformer_b36.sail_in22k_ft_in1k
 drop_path_rate: 0
 
 model:
-  use_offset_input: true
+  use_offset_input: True
 
 # 一般設定
 num_workers: 16
@@ -26,7 +26,7 @@ use_ema: True
 use_amp: True
 ema_decay: 0.99
 
-device: 'cuda:1'
+device: 'cuda'
 
 # Training task
 task: recon  # recon | fb_seg
@@ -44,7 +44,7 @@ val_steps: 50
 epoch_block: 20
 num_block: 10
 print_freq: 100
-resume: null # /workspace/proc/result/recon/train_field_list_caformer_b36.sail_in22k_ft_in1k/checkpoint.pth
+resume:  /workspace/proc/result/recon/train_field_list_caformer_b36.sail_in22k_ft_in1k/checkpoint.pth
 start_epoch: 0
 
 # Freeze schedule
@@ -79,14 +79,14 @@ snr:
   noise_std: ${dataset.mask_noise_std}
 
 dataset:
-  primary_keys: [ffid, cmp, chno]        # 例: [ffid, chno, cmp] / [ffid] / [chno, cmp]
-  primary_key_weights: [0.33,0.33,0.33]  # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
+  primary_keys: [ffid,chno,cmp]        # 例: [ffid, chno, cmp] / [ffid] / [chno, cmp]
+  primary_key_weights: null # 例: [0.7, 0.2, 0.1]  （長さは primary_keys に対応
   use_superwindow: false        # true で近傍 primary を結合（非平均）
   sw_halfspan: 1                # ±いくつ結合するか（0で無効）
   sw_prob: 0.3
   use_header_cache: true         # 既定false。trueで .npz を利用s
   header_cache_dir: null         # nullなら SEG-Y と同じ場所に作成
-  mask_ratio: 0
+  mask_ratio: 0.5
   mask_mode: replace         # replace | add
   mask_noise_std: 1
   target_mode: ${task}
@@ -117,8 +117,8 @@ dataset:
 
 # Loss configuration
 loss:
-  shift_robust: true    # set true for replace-mode training
-  max_shift: 5
+  shift_robust: true  # set true for replace-mode training
+  max_shift: 7
   fb_seg:
     type: kl   # "kl" or "mse"
     tau: 1.0   # softmax 温度
@@ -136,7 +136,7 @@ loss:
     vel_log_eps: 1.0e-4    # fp16安全な ε
     vel_log_neg: -80.0     # ゼロ要素に与える大負値(soft-マスクのlog)
     # --- trend-based prior ---
-    use_trend_prior: True    # まず有効化して挙動確認
+    use_trend_prior: False   # まず有効化して挙動確認
     prior_mode: logit          # 'logit' | 'kl'
     prior_alpha: 0.01         # priorの強さ
     prior_sigma_ms: 50.0       # ガウスpriorの標準偏差 [ms]
