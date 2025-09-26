@@ -41,16 +41,23 @@ def load_synth_pair(
 	used_ffids = []
 	gathers_noisy = []
 	gathers_clean = []
+	gathers_offsets = []
 	H_list = []
 	with (
 		segyio.open(noisy_path, 'r', ignore_geometry=True, strict=False, endian=endian) as fn,
 		segyio.open(clean_path, 'r', ignore_geometry=True, strict=False, endian=endian) as fc,
 	):
 		cdp_tr = np.asarray(fn.attributes(segyio.TraceField.CDP_TRACE)[:])
+		src_x_all = np.asarray(fn.attributes(segyio.TraceField.SourceX)[:], dtype=np.float32)
+		grp_x_all = np.asarray(fn.attributes(segyio.TraceField.GroupX)[:], dtype=np.float32)
 		for ff in extract_key1idxs:
 			idx = np.where(cdp_tr == ff)[0]
 			g_noisy = _read_gather_by_indices(fn, idx, target_len=target_len)
 			g_clean = _read_gather_by_indices(fc, idx, target_len=target_len)
+			if idx.size > 0:
+				offs = np.abs(src_x_all[idx] - grp_x_all[idx]).astype(np.float32)
+			else:
+				offs = np.zeros((0,), dtype=np.float32)
 			if standardize and g_noisy.shape[0] > 0:
 				for x in (g_noisy, g_clean):
 					m = x.mean(axis=1, keepdims=True)
@@ -59,8 +66,10 @@ def load_synth_pair(
 					x /= s
 			gathers_noisy.append(g_noisy)
 			gathers_clean.append(g_clean)
-			used_ffids.append(int(ff))
 			H_list.append(int(g_noisy.shape[0]))
+			offsets = torch.from_numpy(offs)
+			used_ffids.append(int(ff))
+			gathers_offsets.append(offsets)
 	if len(gathers_noisy) == 0:
 		raise ValueError('指定した FFID がいずれのファイルにも見つかりませんでした。')
 	N = len(gathers_noisy)
@@ -69,8 +78,12 @@ def load_synth_pair(
 	x_noisy = torch.zeros((N, 1, Hmax, W), dtype=torch.float32)
 	x_clean = torch.zeros((N, 1, Hmax, W), dtype=torch.float32)
 	valid_mask = torch.zeros((N, 1, Hmax, 1), dtype=torch.float32)
-	for i, (gn, gc, H) in enumerate(zip(gathers_noisy, gathers_clean, H_list, strict=False)):
+	offsets_pad = torch.zeros((N, Hmax), dtype=torch.float32)
+	for i, (gn, gc, off, H) in enumerate(
+		zip(gathers_noisy, gathers_clean, gathers_offsets, H_list, strict=False)
+	):
 		x_noisy[i, 0, :H, :] = torch.from_numpy(gn)
 		x_clean[i, 0, :H, :] = torch.from_numpy(gc)
 		valid_mask[i, 0, :H, 0] = 1.0
-	return x_noisy, x_clean, valid_mask, used_ffids, H_list
+		offsets_pad[i, :H] = off
+	return x_noisy, x_clean, offsets_pad, valid_mask, used_ffids, H_list

@@ -269,7 +269,7 @@ if task == 'recon':
 	)
 
 	# 例) FFID 401 と 601 を抽出（W は 6016 に揃える）
-	synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
+	synthe_noisy, synthe_clean, synthe_offsets, _, used_ffids, Hs = load_synth_pair(
 		synthe_noise_segy,
 		synthe_clean_segy,
 		extract_key1idxs=[1, 401, 801, 1201, 1601],
@@ -452,6 +452,7 @@ for epoch in range(cfg.start_epoch, epochs):
 			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 			if utils.is_main_process()
 			else (),
+			use_offset_input=getattr(cfg.model, 'use_offset_input', False),
 		)
 
 		# 合成データ推論 & 指標
@@ -460,6 +461,10 @@ for epoch in range(cfg.start_epoch, epochs):
 			synthe_noisy.to(device),
 			mask_noise_mode=cfg.dataset.mask_mode,
 			noise_std=cfg.dataset.mask_noise_std,
+			offsets=synthe_offsets.to(device)
+			if getattr(cfg.model, 'use_offset_input', False)
+			else None,
+			use_offset_input=getattr(cfg.model, 'use_offset_input', False),
 		)
 		synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
 		for i in range(len(synthe_noisy)):
