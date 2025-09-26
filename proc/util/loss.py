@@ -320,7 +320,6 @@ def shift_robust_l2_pertrace_loop(pred, gt, mask=None, max_shift=6, reduction='m
 			loss_bh = ((pd - gd) ** 2).mean(dim=(1, 3))
 
 		best = torch.minimum(best, loss_bh)
-
 	if reduction == 'none':
 		return best
 	if reduction == 'sum':
@@ -338,8 +337,16 @@ def compute_loss(
 	shift_robust = bool(getattr(cfg_loss, 'shift_robust', False))
 	max_shift = int(getattr(cfg_loss, 'max_shift', 5))
 	if shift_robust:
+		p32 = pred.to(torch.float32)
+		t32 = target.to(torch.float32)
+		m32 = None
+		if mask is not None:
+			if mask.dim() != 4:
+				mask = mask.view(pred.size(0), 1, pred.size(2), pred.size(3))
+			m32 = mask.to(torch.float32)
+
 		return shift_robust_l2_pertrace_vec(
-			pred, target, mask=mask, max_shift=max_shift, reduction='mean'
+			p32, t32, mask=m32, max_shift=max_shift, reduction='mean'
 		)
 	if mask is not None:
 		if mask.dim() != 4:
