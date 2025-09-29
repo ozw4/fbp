@@ -349,6 +349,7 @@ if cfg.distributed:
 	model_without_ddp = model.module
 
 transfer_loaded = False
+done_inflate = False
 if cfg.resume:
 	transfer_loaded = True
 	checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
@@ -356,9 +357,18 @@ if cfg.resume:
 	# 1) モデル重みを読み込む（必要ならヘッドを除外）
 	if getattr(cfg, 'resume_exclude_head', False):
 		prefixes = tuple(getattr(cfg, 'resume_exclude_prefixes', ('seg_head',)))
-		load_state_dict_excluding(
-			model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
-		)
+		try:
+			load_state_dict_excluding(
+				model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
+			)
+		except RuntimeError:
+			inflate_input_convs_to_2ch(
+				model_without_ddp, verbose=True, init_mode='duplicate'
+			)
+			load_state_dict_excluding(
+				model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
+			)
+			done_inflate = True
 	else:
 		model_state = checkpoint.get('model_ema', checkpoint)
 		model_without_ddp.load_state_dict(model_state, strict=False)
@@ -384,7 +394,8 @@ if cfg.resume:
 				'[resume] loaded model weights only (optimizer/scheduler reinitialized)'
 			)
 
-if getattr(cfg.model, 'use_offset_input', False):
+
+if getattr(cfg.model, 'use_offset_input', False) and not done_inflate:
 	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='duplicate')
 
 # 3) 段階解凍のガード用フラグ
