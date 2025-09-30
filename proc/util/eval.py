@@ -31,11 +31,11 @@ def val_one_epoch_snr(
 	for i, (x_masked, x_orig, _, meta) in enumerate(val_loader):
 		x_orig = x_orig.to(device, non_blocking=True)
 		fb_idx = meta['fb_idx'].to(device)
-		offsets = meta.get('offsets')
-		if offsets is not None:
-			offsets = offsets.to(device, non_blocking=True)
-		if use_offset_input and offsets is None:
-			raise ValueError('offsets are required for use_offset_input evaluation')
+		offsets = None
+		if use_offset_input:
+			if 'offsets' not in meta:
+				raise KeyError('offsets field is required when use_offset_input=True')
+			offsets = meta['offsets']
 		y_full = cover_all_traces_predict(
 			model,
 			x_orig,
@@ -46,8 +46,8 @@ def val_one_epoch_snr(
 			seed=cfg_snr.seed,
 			passes_batch=cfg_snr.passes_batch,
 			mask_noise_mode=getattr(cfg_snr, 'mask_noise_mode', 'replace'),
-			offsets=offsets,
 			use_offset_input=use_offset_input,
+			offsets=offsets,
 		)
 		cache = prepare_fb_windows(
 			fb_idx,
