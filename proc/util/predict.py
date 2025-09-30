@@ -4,7 +4,9 @@ from typing import Literal
 import torch
 from torch.amp.autocast_mode import autocast
 
-from proc.util.features import make_offset_channel
+
+from features import make_offset_channel
+
 
 __all__ = ['cover_all_traces_predict', 'cover_all_traces_predict_chunked']
 
@@ -23,6 +25,7 @@ def cover_all_traces_predict(
 	passes_batch: int = 4,
 	use_offset_input: bool = False,
 	offsets: torch.Tensor | None = None,
+
 ) -> torch.Tensor:
 	"""Predict each trace by covering all traces once.
 
@@ -33,7 +36,9 @@ def cover_all_traces_predict(
 	if x.dim() != 4 or x.size(1) < 1:
 		raise AssertionError('x must be (B,>=1,H,W)')
 	device = device or x.device
+
 	B, C, H, W = x.shape
+
 	m = max(1, min(int(round(mask_ratio * H)), H - 1))
 	K = math.ceil(H / m)
 	y_full = torch.empty_like(x[:, :1])
@@ -60,6 +65,7 @@ def cover_all_traces_predict(
 			xmb = []
 			for idxs in batch_chunks:
 				xm_data = x[b : b + 1, :1].clone()
+
 				if seed is not None:
 					gk = torch.Generator(device='cpu').manual_seed(
 						(seed + b) * 100003 + s * 1009 + int(idxs[0])
@@ -78,9 +84,11 @@ def cover_all_traces_predict(
 					xm_data[:, :, idxs_dev, :] += n
 				else:
 					raise ValueError(f'Invalid mask_noise_mode: {mask_noise_mode}')
+
 				if static_channels is not None and static_channels.size(1) > 0:
 					static = static_channels[b : b + 1]
 					xm = torch.cat([xm_data, static], dim=1)
+
 				else:
 					xm = xm_data
 				xmb.append(xm)
@@ -107,8 +115,10 @@ def cover_all_traces_predict_chunked(
 	device=None,
 	seed: int = 12345,
 	passes_batch: int = 4,
+
 	use_offset_input: bool = False,
 	offsets: torch.Tensor | None = None,
+
 ) -> torch.Tensor:
 	"""Apply cover_all_traces_predict on tiled H-axis chunks.
 
@@ -119,14 +129,18 @@ def cover_all_traces_predict_chunked(
 	assert overlap < chunk_h, 'overlap は chunk_h より小さくしてください'
 	device = device or x.device
 	B, _, H, W = x.shape
+
 	y_acc = torch.zeros_like(x[:, :1])
+
 	w_acc = torch.zeros((B, 1, H, 1), dtype=x.dtype, device=device)
 	step = chunk_h - overlap
 	s = 0
 	while s < H:
 		e = min(s + chunk_h, H)
 		xt = x[:, :, s:e, :]
+
 		offs_t = offsets[:, s:e] if offsets is not None else None
+
 		yt = cover_all_traces_predict(
 			model,
 			xt,
@@ -139,6 +153,7 @@ def cover_all_traces_predict_chunked(
 			passes_batch=passes_batch,
 			use_offset_input=use_offset_input,
 			offsets=offs_t,
+
 		)
 		h_t = e - s
 		w = torch.ones((1, 1, h_t, 1), dtype=x.dtype, device=device)

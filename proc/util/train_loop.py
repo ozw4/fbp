@@ -200,33 +200,34 @@ def train_one_epoch(
 				for k in ('fb_idx', 'offsets', 'dt_sec'):
 					if k in meta and isinstance(meta[k], torch.Tensor):
 						meta[k] = meta[k][keep]
-			with autocast(device_type=device_type, enabled=use_amp):
-				x_in = x_masked
-				if use_offset_input and ('offsets' in meta):
-					offs_ch = make_offset_channel(x_masked, meta['offsets'])
-					x_in = torch.cat([x_masked, offs_ch], dim=1)
-				pred = model(x_in)
-				if not _finite_or_report('logits', pred, meta):
-					print('[SKIP] non-finite logits; skipping batch')
-					optimizer.zero_grad(set_to_none=True)
-					continue
-			out = criterion(
-				pred,
-				x_tgt,
-				mask=mask_or_none,
-				fb_idx=meta['fb_idx'],
-				offsets=meta.get('offsets'),
-				dt_sec=meta['dt_sec'],
-			)
-			if isinstance(out, tuple):
-				total_loss, loss_logs = out
-			else:
-				total_loss, loss_logs = out, {}
-			if not torch.isfinite(total_loss):
-				print('[SKIP] non-finite loss; skipping batch')
+
+		with autocast(device_type=device_type, enabled=use_amp):
+			x_in = x_masked
+			if use_offset_input and ('offsets' in meta):
+				offs_ch = make_offset_channel(x_masked, meta['offsets'])
+				x_in = torch.cat([x_masked, offs_ch], dim=1)
+			pred = model(x_in)
+			if not _finite_or_report('logits', pred, meta):
+				print('[SKIP] non-finite logits; skipping batch')
 				optimizer.zero_grad(set_to_none=True)
 				continue
-			main_loss = total_loss / gradient_accumulation_steps
+		out = criterion(
+			pred,
+			x_tgt,
+			mask=mask_or_none,
+			fb_idx=meta['fb_idx'],
+			offsets=meta.get('offsets'),
+			dt_sec=meta['dt_sec'],
+		)
+		if isinstance(out, tuple):
+			total_loss, loss_logs = out
+		else:
+			total_loss, loss_logs = out, {}
+		if not torch.isfinite(total_loss):
+			print('[SKIP] non-finite loss; skipping batch')
+			optimizer.zero_grad(set_to_none=True)
+			continue
+		main_loss = total_loss / gradient_accumulation_steps
 		if scaler:
 			scaler.scale(main_loss).backward()
 		else:

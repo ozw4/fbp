@@ -269,7 +269,7 @@ if task == 'recon':
 	)
 
 	# 例) FFID 401 と 601 を抽出（W は 6016 に揃える）
-	synthe_noisy, synthe_clean, _, used_ffids, Hs = load_synth_pair(
+	synthe_noisy, synthe_clean, synthe_offsets, _, used_ffids, Hs = load_synth_pair(
 		synthe_noise_segy,
 		synthe_clean_segy,
 		extract_key1idxs=[1, 401, 801, 1201, 1601],
@@ -361,6 +361,7 @@ if cfg.distributed:
 	model_without_ddp = model.module
 
 transfer_loaded = False
+done_inflate = False
 if cfg.resume:
 	transfer_loaded = True
 	checkpoint = torch.load(cfg.resume, map_location='cpu', weights_only=False)
@@ -368,9 +369,18 @@ if cfg.resume:
 	# 1) モデル重みを読み込む（必要ならヘッドを除外）
 	if getattr(cfg, 'resume_exclude_head', False):
 		prefixes = tuple(getattr(cfg, 'resume_exclude_prefixes', ('seg_head',)))
-		load_state_dict_excluding(
-			model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
-		)
+		try:
+			load_state_dict_excluding(
+				model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
+			)
+		except RuntimeError:
+			inflate_input_convs_to_2ch(
+				model_without_ddp, verbose=True, init_mode='duplicate'
+			)
+			load_state_dict_excluding(
+				model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
+			)
+			done_inflate = True
 	else:
 		model_state = checkpoint.get('model_ema', checkpoint)
 		model_without_ddp.load_state_dict(model_state, strict=False)
@@ -396,8 +406,9 @@ if cfg.resume:
 				'[resume] loaded model weights only (optimizer/scheduler reinitialized)'
 			)
 
-if getattr(cfg.model, 'use_offset_input', False):
-	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='zeros')
+
+if getattr(cfg.model, 'use_offset_input', False) and not done_inflate:
+	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='duplicate')
 
 # 3) 段階解凍のガード用フラグ
 model._transfer_loaded = transfer_loaded
@@ -465,6 +476,7 @@ for epoch in range(cfg.start_epoch, epochs):
 			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 			if utils.is_main_process()
 			else (),
+			use_offset_input=getattr(cfg.model, 'use_offset_input', False),
 		)
 
 		# 合成データ推論 & 指標
@@ -477,6 +489,7 @@ for epoch in range(cfg.start_epoch, epochs):
 			offsets=synthe_offsets.to(device)
 			if 'synthe_offsets' in locals() and synthe_offsets is not None
 			else None,
+
 		)
 		synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
 		for i in range(len(synthe_noisy)):
