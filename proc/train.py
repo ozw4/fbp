@@ -122,6 +122,7 @@ train_dataset = MaskedSegyGather(
 	fblc_min_pairs=cfg.dataset.fblc_min_pairs,
 	fblc_apply_on=cfg.dataset.fblc_apply_on,
 	valid=True,
+	pick_ratio=cfg.dataset.pick_ratio,
 )
 
 if task == 'fb_seg':
@@ -144,6 +145,7 @@ if task == 'fb_seg':
 		augment_freq_prob=0.0,
 		valid=True,
 		verbose=False,
+		pick_ratio=cfg.dataset.pick_ratio,
 	)
 elif task == 'recon':
 	valid_dataset = MaskedSegyGather(
@@ -165,6 +167,7 @@ elif task == 'recon':
 		augment_freq_prob=0.0,
 		reject_fblc=False,
 		valid=True,
+		pick_ratio=cfg.dataset.pick_ratio,
 	)
 val_src = copy.copy(valid_dataset)  # file_infos を共有
 val_src.flip = False  # ここだけ無反転で取りたい場合
@@ -280,15 +283,11 @@ if task == 'recon':
 	synthe_offsets = None
 	if getattr(cfg.model, 'use_offset_input', False):
 		max_h = synthe_noisy.shape[2]
-		synthe_offsets = torch.zeros(
-			(synthe_noisy.size(0), max_h), dtype=torch.float32
-		)
+		synthe_offsets = torch.zeros((synthe_noisy.size(0), max_h), dtype=torch.float32)
 		for i, h in enumerate(Hs):
 			if h <= 0:
 				continue
-			synthe_offsets[i, :h] = torch.arange(
-				h, dtype=torch.float32
-			)
+			synthe_offsets[i, :h] = torch.arange(h, dtype=torch.float32)
 
 
 print(cfg.backbone)
@@ -374,13 +373,15 @@ if cfg.resume:
 				model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
 			)
 		except RuntimeError:
-			inflate_input_convs_to_2ch(
-				model_without_ddp, verbose=True, init_mode='duplicate'
-			)
+			if getattr(cfg.model, 'use_offset_input', False):
+				inflate_input_convs_to_2ch(
+					model_without_ddp, verbose=True, init_mode='duplicate'
+				)
+				done_inflate = True
 			load_state_dict_excluding(
 				model_without_ddp, checkpoint, exclude_prefixes=prefixes, strict=False
 			)
-			done_inflate = True
+
 	else:
 		model_state = checkpoint.get('model_ema', checkpoint)
 		model_without_ddp.load_state_dict(model_state, strict=False)
@@ -408,6 +409,7 @@ if cfg.resume:
 
 
 if getattr(cfg.model, 'use_offset_input', False) and not done_inflate:
+	print('[init] using offset as additional input channel')
 	inflate_input_convs_to_2ch(model_without_ddp, verbose=True, init_mode='duplicate')
 
 # 3) 段階解凍のガード用フラグ
@@ -476,7 +478,6 @@ for epoch in range(cfg.start_epoch, epochs):
 			viz_batches=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 			if utils.is_main_process()
 			else (),
-			use_offset_input=getattr(cfg.model, 'use_offset_input', False),
 		)
 
 		# 合成データ推論 & 指標
@@ -489,7 +490,6 @@ for epoch in range(cfg.start_epoch, epochs):
 			offsets=synthe_offsets.to(device)
 			if 'synthe_offsets' in locals() and synthe_offsets is not None
 			else None,
-
 		)
 		synthe_metrics = eval_synthe(synthe_clean, pred, device=device)
 		for i in range(len(synthe_noisy)):
