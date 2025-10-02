@@ -4,9 +4,7 @@ from typing import Literal
 import torch
 from torch.amp.autocast_mode import autocast
 
-
-from features import make_offset_channel
-
+from proc.util.features import make_offset_channel
 
 __all__ = ['cover_all_traces_predict', 'cover_all_traces_predict_chunked']
 
@@ -25,7 +23,6 @@ def cover_all_traces_predict(
 	passes_batch: int = 4,
 	use_offset_input: bool = False,
 	offsets: torch.Tensor | None = None,
-
 ) -> torch.Tensor:
 	"""Predict each trace by covering all traces once.
 
@@ -115,10 +112,8 @@ def cover_all_traces_predict_chunked(
 	device=None,
 	seed: int = 12345,
 	passes_batch: int = 4,
-
 	use_offset_input: bool = False,
 	offsets: torch.Tensor | None = None,
-
 ) -> torch.Tensor:
 	"""Apply cover_all_traces_predict on tiled H-axis chunks.
 
@@ -153,7 +148,6 @@ def cover_all_traces_predict_chunked(
 			passes_batch=passes_batch,
 			use_offset_input=use_offset_input,
 			offsets=offs_t,
-
 		)
 		h_t = e - s
 		w = torch.ones((1, 1, h_t, 1), dtype=x.dtype, device=device)
