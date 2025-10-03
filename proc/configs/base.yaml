@@ -9,10 +9,10 @@ valid_field_list: train_field_list_eq_mobara.txt
 file_size: null
 
 # パス関連
-suffix: caformer_mobara_mae_mask09'
+suffix: edgenext_small_mobara_mae_mask05'
 
 # モデル関連（共通部分）
-backbone:  caformer_b36.sail_in22k_ft_in1k  #edgenext_small.usi_in1k |caformer_b36.sail_in22k_ft_in1k
+backbone: edgenext_small.usi_in1k  #edgenext_small.usi_in1k |caformer_b36.sail_in22k_ft_in1k
 drop_path_rate: 0
 
 model:
@@ -41,10 +41,10 @@ weight_decay: 0.0001
 lr_gamma: 0.2
 lr_warmup_epochs: 5
 val_steps: 50
-epoch_block: 20
+epoch_block: 2
 num_block: 10
 print_freq: 100
-resume:  /workspace/proc/result/recon/train_field_list_caformer_b36.sail_in22k_ft_in1k/checkpoint.pth
+resume:  /workspace/proc/result/recon/train_field_list_edgenext_small/checkpoint.pth
 start_epoch: 0
 
 # Freeze schedule

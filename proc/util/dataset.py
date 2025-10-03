@@ -15,8 +15,6 @@ from .augment import (
 	_spatial_stretch_sameH,
 )
 
-__all__ = ['MaskedSegyGather']
-
 
 def _load_headers_with_cache(
 	segy_path: str,

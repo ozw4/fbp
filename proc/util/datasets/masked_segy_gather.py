@@ -14,8 +14,8 @@ from proc.util.augment import (
 	_apply_freq_augment,
 	_spatial_stretch_sameH,
 )
-from proc.util.dataset.config import LoaderConfig
-from proc.util.dataset.trace_subset_preproc import TraceSubsetLoader
+from proc.util.datasets.config import LoaderConfig
+from proc.util.datasets.trace_subset_preproc import TraceSubsetLoader
 
 __all__ = ['MaskedSegyGather']
 

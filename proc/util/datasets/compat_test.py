@@ -4,8 +4,8 @@ import random
 import numpy as np
 import torch
 
-from proc.util.dataset.masked_segy_gather import MaskedSegyGather as New
-from proc.util.dataset.masked_segy_gather_legacy import MaskedSegyGather as Legacy
+from proc.util.datasets.masked_segy_gather import MaskedSegyGather as New
+from proc.util.datasets.masked_segy_gather_legacy import MaskedSegyGather as Legacy
 
 
 def to_np(x):
