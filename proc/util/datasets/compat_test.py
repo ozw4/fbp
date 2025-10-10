@@ -27,6 +27,9 @@ def build_args():
 		augment_freq_prob=0.0,
 		valid=True,  # secondary sort を固定化
 		verbose=False,
+		primary_keys=('ffid'),
+		pick_ratio=0,
+		reject_fblc=False,
 	)
 	return common
 

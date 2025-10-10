@@ -14,8 +14,9 @@ from proc.util.augment import (
 	_apply_freq_augment,
 	_spatial_stretch_sameH,
 )
-from proc.util.datasets.config import LoaderConfig
+from proc.util.datasets.config import LoaderConfig, TraceSubsetSamplerConfig
 from proc.util.datasets.trace_subset_preproc import TraceSubsetLoader
+from proc.util.datasets.trace_subset_sampler import TraceSubsetSampler
 
 __all__ = ['MaskedSegyGather']
 
@@ -192,7 +193,6 @@ class MaskedSegyGather(Dataset):
 		self.use_header_cache = use_header_cache
 		self.header_cache_dir = header_cache_dir
 
-		self._valid_primary_keys = {'ffid', 'chno', 'cmp'}
 		self.mask_ratio = mask_ratio
 		self.mask_mode = mask_mode
 		self.mask_noise_std = mask_noise_std
@@ -222,6 +222,17 @@ class MaskedSegyGather(Dataset):
 			LoaderConfig(target_len=self.target_len, pad_traces_to=128)
 		)
 		self.file_infos = []
+		self.sampler = TraceSubsetSampler(
+			TraceSubsetSamplerConfig(
+				primary_keys=self.primary_keys,
+				primary_key_weights=self.primary_key_weights,
+				use_superwindow=self.use_superwindow,
+				sw_halfspan=self.sw_halfspan,
+				sw_prob=self.sw_prob,
+				valid=self.valid,
+				subset_traces=128,
+			)
+		)
 		for segy_path, fb_path in zip(self.segy_files, self.fb_files, strict=False):
 			print(f'Loading {segy_path} and {fb_path}')
 			if self.use_header_cache:
@@ -418,181 +429,18 @@ class MaskedSegyGather(Dataset):
 
 	def __getitem__(self, _=None):
 		while True:
-			secondary_key = 'none'
 			info = random.choice(self.file_infos)
 			mmap = info['mmap']
+
+			s = self.sampler.draw(info, py_random=random)
+			indices = s['indices']
+			pad_len = s['pad_len']
+			key_name = s['key_name']
+			secondary_key = s['secondary_key']
+			did_super = s['did_super']
+			primary_unique_str = s['primary_unique']
+
 			fb = info['fb']
-
-			cmp_available = (
-				bool(info.get('cmp_unique_keys'))
-				and isinstance(info['cmp_unique_keys'], (list, tuple))
-				and len(info['cmp_unique_keys']) > 0
-			)
-
-			# ---- primary key selection (Hydra weights if provided) ----
-			if self.primary_keys:
-				key_candidates, weight_candidates = [], []
-				for i, k in enumerate(self.primary_keys):
-					if k not in self._valid_primary_keys:
-						warnings.warn(f'Unknown primary key "{k}" ignored.')
-						continue
-					if k == 'cmp' and not cmp_available:
-						continue
-					key_candidates.append(k)
-					if self.primary_key_weights and i < len(self.primary_key_weights):
-						weight_candidates.append(
-							max(float(self.primary_key_weights[i]), 0.0)
-						)
-					else:
-						weight_candidates.append(1.0)
-				if not key_candidates:  # fallback
-					key_candidates = ['ffid', 'chno'] + (
-						['cmp'] if cmp_available else []
-					)
-					weight_candidates = [1.0] * len(key_candidates)
-			else:
-				key_candidates = ['ffid', 'chno'] + (['cmp'] if cmp_available else [])
-				weight_candidates = [1.0] * len(key_candidates)
-
-			if any(w > 0 for w in weight_candidates) and len(weight_candidates) == len(
-				key_candidates
-			):
-				key_name = random.choices(
-					key_candidates, weights=weight_candidates, k=1
-				)[0]
-			else:
-				key_name = random.choice(key_candidates)
-
-			unique_keys = info[f'{key_name}_unique_keys']
-			key_to_indices = info[f'{key_name}_key_to_indices']
-			if not unique_keys:
-				continue
-
-			key = random.choice(unique_keys)
-			indices = key_to_indices[key]
-
-			apply_super = False
-			did_super = False  # ← このサンプルで実際に superwindow を適用したかどうか
-
-			# === superwindow (distance-KNN for ffid/chno; index-window fallback) ===
-			if self.use_superwindow and self.sw_halfspan > 0:
-				apply_super = True
-				if hasattr(self, 'sw_prob') and float(self.sw_prob) < 1.0:
-					if random.random() >= float(self.sw_prob):
-						apply_super = False
-
-				if apply_super:
-					did_super = True  # ← 実際に superwindow を使ったのでフラグON
-					K = 1 + 2 * int(self.sw_halfspan)
-
-					def _index_window():
-						uniq = info.get(f'{key_name}_unique_keys', None)
-						uniq_arr = (
-							np.asarray(uniq, dtype=np.int64)
-							if isinstance(uniq, (list, tuple))
-							else np.asarray([], dtype=np.int64)
-						)
-						if uniq_arr.size > 0:
-							uniq_sorted = np.sort(uniq_arr)
-							center = int(key)
-							pos = np.searchsorted(uniq_sorted, center)
-							lo = max(0, pos - self.sw_halfspan)
-							hi = min(len(uniq_sorted), pos + self.sw_halfspan + 1)
-							return [int(k) for k in uniq_sorted[lo:hi]]
-						return [int(key)]
-
-					if key_name == 'ffid':
-						cent = info.get('ffid_centroids', None)
-						if isinstance(cent, dict) and int(key) in cent:
-							keys = np.fromiter(cent.keys(), dtype=np.int64)
-							coords = np.array(
-								[cent[int(k)] for k in keys], dtype=np.float64
-							)
-							cx, cy = cent[int(key)]
-							d = np.hypot(coords[:, 0] - cx, coords[:, 1] - cy)
-							order = np.argsort(d)
-							sel_keys = keys[order][:K]
-							k2map = info['ffid_key_to_indices']
-						else:
-							win_keys = _index_window()
-							k2map = info[f'{key_name}_key_to_indices']
-							sel_keys = np.asarray(win_keys, dtype=np.int64)
-					elif key_name == 'chno':
-						cent = info.get('chno_centroids', None)
-						if isinstance(cent, dict) and int(key) in cent:
-							keys = np.fromiter(cent.keys(), dtype=np.int64)
-							coords = np.array(
-								[cent[int(k)] for k in keys], dtype=np.float64
-							)
-							cx, cy = cent[int(key)]
-							d = np.hypot(coords[:, 0] - cx, coords[:, 1] - cy)
-							order = np.argsort(d)
-							sel_keys = keys[order][:K]
-							k2map = info['chno_key_to_indices']
-						else:
-							win_keys = _index_window()
-							k2map = info[f'{key_name}_key_to_indices']
-							sel_keys = np.asarray(win_keys, dtype=np.int64)
-					else:
-						win_keys = _index_window()
-						k2map = info[f'{key_name}_key_to_indices']
-						sel_keys = np.asarray(win_keys, dtype=np.int64)
-
-					chunks = []
-					for k2 in sel_keys:
-						idxs = k2map.get(int(k2))
-						if idxs is not None and len(idxs) > 0:
-							chunks.append(idxs)
-					if chunks:
-						indices = np.concatenate(chunks).astype(np.int64)
-					else:
-						indices = np.asarray(indices, dtype=np.int64)
-				else:
-					indices = np.asarray(indices, dtype=np.int64)
-			else:
-				indices = np.asarray(indices, dtype=np.int64)
-			# === end superwindow ===
-
-			# ---- secondary sort rules ----
-			try:
-				prim_vals = info[f'{key_name}_values'][indices]
-				if not apply_super and not self.valid:
-					if key_name == 'ffid':
-						secondary = random.choice(('chno', 'offset'))
-					elif key_name == 'chno':
-						secondary = random.choice(('ffid', 'offset'))
-					else:  # 'cmp'
-						secondary = 'offset'
-				elif apply_super and not self.valid:
-					secondary = 'offset'
-				elif self.valid:
-					if key_name == 'ffid':
-						secondary = 'chno'
-					elif key_name == 'chno':
-						secondary = 'ffid'
-					else:  # 'cmp'
-						secondary = 'offset'
-
-				secondary_key = secondary
-				if secondary == 'chno':
-					sec_vals = info['chno_values'][indices]
-				elif secondary == 'ffid':
-					sec_vals = info['ffid_values'][indices]
-				else:
-					sec_vals = info['offsets'][indices]
-
-				# stable lexicographic: primary then secondary
-				o = np.argsort(prim_vals, kind='mergesort')
-				indices = indices[o]
-				sec_vals = sec_vals[o]
-				o2 = np.argsort(sec_vals, kind='mergesort')
-				indices = indices[o2]
-			except Exception as e:
-				print(f'Warning: secondary sort failed: {e}')
-				print(f'  key_name={key_name}, indices.shape={indices.shape}')
-				print(f'  prim_vals={prim_vals if "prim_vals" in locals() else "N/A"}')
-				print(f'  sec_vals={sec_vals if "sec_vals" in locals() else "N/A"}')
-				print(f'  {info["path"]}')
 
 			# ---- take up to 128 traces (contiguous slice) ----
 			n_total = len(indices)
