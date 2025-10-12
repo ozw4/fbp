@@ -580,8 +580,14 @@ class MaskedSegyGather(Dataset):
 							f'for FBLC {p_ms:.1f}ms <= {self.fblc_thresh_ms}ms'
 						)
 
-						# masking (after acceptance)
-						x_masked, mask_idx = self.masker.apply(x, py_random=random)
+			# masking (after acceptance)
+			x_masked, mask_idx = self.masker.apply(
+				x,
+				mask_ratio=self.mask_ratio,
+				mode=self.mask_mode,
+				noise_std=self.mask_noise_std,
+				py_random=random,
+			)
 
 			# target (optional)
 			target_t = None
