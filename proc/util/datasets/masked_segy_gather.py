@@ -18,6 +18,8 @@ from proc.util.datasets.config import LoaderConfig, TraceSubsetSamplerConfig
 from proc.util.datasets.trace_subset_preproc import TraceSubsetLoader
 from proc.util.datasets.trace_subset_sampler import TraceSubsetSampler
 
+from .trace_masker import TraceMasker, TraceMaskerConfig
+
 __all__ = ['MaskedSegyGather']
 
 
@@ -196,6 +198,13 @@ class MaskedSegyGather(Dataset):
 		self.mask_ratio = mask_ratio
 		self.mask_mode = mask_mode
 		self.mask_noise_std = mask_noise_std
+		self.masker = TraceMasker(
+			TraceMaskerConfig(
+				mask_ratio=self.mask_ratio,
+				mode=self.mask_mode,
+				noise_std=self.mask_noise_std,
+			)
+		)
 		self.flip = flip
 		self.pick_ratio = pick_ratio
 		self.target_len = target_len
@@ -572,20 +581,13 @@ class MaskedSegyGather(Dataset):
 						)
 
 			# masking (after acceptance)
-			H = x.shape[0]
-			num_mask = int(self.mask_ratio * H)
-			mask_idx = random.sample(range(H), num_mask) if num_mask > 0 else []
-			x_masked = x.copy()
-			if num_mask > 0:
-				noise = np.random.normal(
-					0.0, self.mask_noise_std, size=(num_mask, x.shape[1])
-				)
-				if self.mask_mode == 'replace':
-					x_masked[mask_idx] = noise
-				elif self.mask_mode == 'add':
-					x_masked[mask_idx] += noise
-				else:
-					raise ValueError(f'Invalid mask_mode: {self.mask_mode}')
+			x_masked, mask_idx = self.masker.apply(
+				x,
+				mask_ratio=self.mask_ratio,
+				mode=self.mask_mode,
+				noise_std=self.mask_noise_std,
+				py_random=random,
+			)
 
 			# target (optional)
 			target_t = None
