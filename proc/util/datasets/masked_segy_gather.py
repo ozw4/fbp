@@ -18,6 +18,7 @@ from proc.util.datasets.config import LoaderConfig, TraceSubsetSamplerConfig
 from proc.util.datasets.trace_subset_preproc import TraceSubsetLoader
 from proc.util.datasets.trace_subset_sampler import TraceSubsetSampler
 
+from .gate_fblc import FirstBreakGate, FirstBreakGateConfig
 from .trace_masker import TraceMasker, TraceMaskerConfig
 
 __all__ = ['MaskedSegyGather']
@@ -227,6 +228,15 @@ class MaskedSegyGather(Dataset):
 		self.fblc_apply_on = fblc_apply_on
 		self.valid = valid
 		self.verbose = verbose
+		self.fblc_gate = FirstBreakGate(
+			FirstBreakGateConfig(
+				percentile=self.fblc_percentile,
+				thresh_ms=self.fblc_thresh_ms,
+				min_pairs=self.fblc_min_pairs,
+				apply_on=self.fblc_apply_on,
+				verbose=self.verbose,
+			)
+		)
 		self.subsetloader = TraceSubsetLoader(
 			LoaderConfig(target_len=self.target_len, pad_traces_to=128)
 		)
@@ -546,36 +556,18 @@ class MaskedSegyGather(Dataset):
 			# FBLC gate (before masking/target/tensorization)
 			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
 			if self.reject_fblc:
-				# super_only の場合は「実際に superwindow を使ったサンプル」に限って判定
-				if self.fblc_apply_on == 'any':
-					apply_gate = True
-				elif self.fblc_apply_on == 'super_only':
-					apply_gate = did_super
-				else:
-					apply_gate = False
-
-				if apply_gate:
-					v = fb_idx_win.astype(np.float64)
-					valid = v >= 0
-					m = valid[1:] & valid[:-1]
-					valid_pairs = int(m.sum())
-
-					# enough valid neighbor pairs?
-					if valid_pairs < int(self.fblc_min_pairs):
-						continue  # サンプル棄却して再抽選
-
-					diffs = np.abs(v[1:] - v[:-1])[m]  # samples
-					p = float(np.percentile(diffs, float(self.fblc_percentile)))
-					p_ms = p * float(dt_eff_sec) * 1000.0
-					if p_ms > float(self.fblc_thresh_ms):
-						if self.verbose:
-							print(
-								f'Rejecting gather {info["path"]} key={key_name}:{key} '
-								f'for FBLC {p_ms:.1f}ms > {self.fblc_thresh_ms}ms'
-							)
-						continue  # reject and resample
-					if self.verbose:
+				ok, p_ms, valid_pairs = self.fblc_gate.accept(
+					fb_idx_win, dt_eff_sec, did_super=did_super
+				)
+				if not ok:
+					if self.verbose and p_ms is not None:
 						print(
+							f'Rejecting gather {info["path"]} key={key_name}:{key} '
+							f'for FBLC {p_ms:.1f}ms > {self.fblc_thresh_ms}ms'
+						)
+					continue
+				if self.verbose and p_ms is not None:
+					print(
 							f'Accepted gather {info["path"]} key={key_name}:{key} '
 							f'for FBLC {p_ms:.1f}ms <= {self.fblc_thresh_ms}ms'
 						)
