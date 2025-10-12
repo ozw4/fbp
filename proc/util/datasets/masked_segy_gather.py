@@ -556,9 +556,15 @@ class MaskedSegyGather(Dataset):
 			# FBLC gate (before masking/target/tensorization)
 			dt_eff_sec = info['dt_sec'] / max(factor, 1e-9)
 			if self.reject_fblc:
-				ok, p_ms, valid_pairs = self.fblc_gate.accept(
-					fb_idx_win, dt_eff_sec, did_super=did_super
-				)
+                               ok, p_ms, valid_pairs = self.fblc_gate.accept(
+                                       fb_idx_win,
+                                       dt_eff_sec,
+                                       did_super=did_super,
+                                       percentile=self.fblc_percentile,
+                                       thresh_ms=self.fblc_thresh_ms,
+                                       min_pairs=self.fblc_min_pairs,
+                                       apply_on=self.fblc_apply_on,
+                               )
 				if not ok:
 					if self.verbose and p_ms is not None:
 						print(
