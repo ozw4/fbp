@@ -11,12 +11,13 @@ from scipy.signal import resample_poly
 from torch.utils.data import Dataset
 
 from proc.util.augment import (
-        _apply_freq_augment,
-        _spatial_stretch_sameH,
+	_apply_freq_augment,
+	_spatial_stretch_sameH,
 )
 from proc.util.datasets.config import LoaderConfig, TraceSubsetSamplerConfig
 from proc.util.datasets.trace_subset_preproc import TraceSubsetLoader
 from proc.util.datasets.trace_subset_sampler import TraceSubsetSampler
+
 from .trace_masker import TraceMasker, TraceMaskerConfig
 
 __all__ = ['MaskedSegyGather']
@@ -194,18 +195,18 @@ class MaskedSegyGather(Dataset):
 		self.use_header_cache = use_header_cache
 		self.header_cache_dir = header_cache_dir
 
-                self.mask_ratio = mask_ratio
-                self.mask_mode = mask_mode
-                self.mask_noise_std = mask_noise_std
-                self.masker = TraceMasker(
-                        TraceMaskerConfig(
-                                mask_ratio=self.mask_ratio,
-                                mode=self.mask_mode,
-                                noise_std=self.mask_noise_std,
-                        )
-                )
-                self.flip = flip
-                self.pick_ratio = pick_ratio
+		self.mask_ratio = mask_ratio
+		self.mask_mode = mask_mode
+		self.mask_noise_std = mask_noise_std
+		self.masker = TraceMasker(
+			TraceMaskerConfig(
+				mask_ratio=self.mask_ratio,
+				mode=self.mask_mode,
+				noise_std=self.mask_noise_std,
+			)
+		)
+		self.flip = flip
+		self.pick_ratio = pick_ratio
 		self.target_len = target_len
 		self.augment_time_prob = augment_time_prob
 		self.augment_time_range = augment_time_range
@@ -579,8 +580,8 @@ class MaskedSegyGather(Dataset):
 							f'for FBLC {p_ms:.1f}ms <= {self.fblc_thresh_ms}ms'
 						)
 
-                        # masking (after acceptance)
-                        x_masked, mask_idx = self.masker.apply(x, py_random=random)
+						# masking (after acceptance)
+						x_masked, mask_idx = self.masker.apply(x, py_random=random)
 
 			# target (optional)
 			target_t = None
