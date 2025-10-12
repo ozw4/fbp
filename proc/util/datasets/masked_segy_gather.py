@@ -20,6 +20,7 @@ from proc.util.datasets.trace_subset_sampler import TraceSubsetSampler
 
 from .gate_fblc import FirstBreakGate, FirstBreakGateConfig
 from .trace_masker import TraceMasker, TraceMaskerConfig
+from .target_fb import FBTargetConfig, FBTargetBuilder
 
 __all__ = ['MaskedSegyGather']
 
@@ -221,6 +222,9 @@ class MaskedSegyGather(Dataset):
 		self.augment_freq_restandardize = augment_freq_restandardize
 		self.target_mode = target_mode
 		self.label_sigma = label_sigma
+		self.fb_target = FBTargetBuilder(
+				FBTargetConfig(sigma=max(float(self.label_sigma), 1e-6))
+		)
 		self.reject_fblc = bool(reject_fblc)
 		self.fblc_percentile = float(fblc_percentile)
 		self.fblc_thresh_ms = float(fblc_thresh_ms)
@@ -590,20 +594,14 @@ class MaskedSegyGather(Dataset):
 			# target (optional)
 			target_t = None
 			if self.target_mode == 'fb_seg':
-				sigma = max(float(self.label_sigma), 1e-6)
-				H_t, W_t = x.shape
-				t = np.arange(W_t, dtype=np.float32)[None, :]
-				target = np.zeros((H_t, W_t), dtype=np.float32)
-				idx = fb_idx_win
-				valid = idx >= 0
-				if valid.any():
-					idxv = idx[valid].astype(np.float32)[:, None]
-					g = np.exp(-0.5 * ((t - idxv) / sigma) ** 2)
-					g /= g.max(axis=1, keepdims=True) + 1e-12
-					target[valid] = g
-				if did_space:
-					target = _spatial_stretch_sameH(target, f_h)
-				target_t = torch.from_numpy(target)[None, ...]
+				W_t = x.shape[1]
+				target_np = self.fb_target.build(
+								fb_idx_win, W_t,
+								did_space=did_space,
+								f_h=f_h,
+								sigma=self.label_sigma,
+				)
+				target_t = torch.from_numpy(target_np)
 
 			# tensors + sample dict
 			x_t = torch.from_numpy(x)[None, ...]
