@@ -1,20 +1,23 @@
 import random
 import warnings
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import segyio
 import torch
+from scipy.signal import resample_poly
 from torch.utils.data import Dataset
 
+from proc.util.augment import (
+	_apply_freq_augment,
+	_spatial_stretch_sameH,
+)
 from proc.util.datasets.config import LoaderConfig, TraceSubsetSamplerConfig
 from proc.util.datasets.trace_subset_preproc import TraceSubsetLoader
 from proc.util.datasets.trace_subset_sampler import TraceSubsetSampler
 
-from .augment_freq import FreqAugConfig, FreqAugmenter
-from .augment_space import SpaceAugConfig, SpaceAugmenter
-from .augment_time import TimeAugConfig, TimeAugmenter
 from .gate_fblc import FirstBreakGate, FirstBreakGateConfig
 from .trace_masker import TraceMasker, TraceMaskerConfig
 from .target_fb import FBTargetConfig, FBTargetBuilder
@@ -217,28 +220,6 @@ class MaskedSegyGather(Dataset):
 		self.augment_freq_width = augment_freq_width
 		self.augment_freq_roll = augment_freq_roll
 		self.augment_freq_restandardize = augment_freq_restandardize
-		self.time_aug = TimeAugmenter(
-			TimeAugConfig(
-				prob=self.augment_time_prob,
-				range=self.augment_time_range,
-			)
-		)
-		self.space_aug = SpaceAugmenter(
-			SpaceAugConfig(
-				prob=self.augment_space_prob,
-				range=self.augment_space_range,
-			)
-		)
-		self.freq_aug = FreqAugmenter(
-			FreqAugConfig(
-				prob=self.augment_freq_prob,
-				kinds=self.augment_freq_kinds,
-				band=self.augment_freq_band,
-				width=self.augment_freq_width,
-				roll=self.augment_freq_roll,
-				restandardize=self.augment_freq_restandardize,
-			)
-		)
 		self.target_mode = target_mode
 		self.label_sigma = label_sigma
 		self.fb_target = FBTargetBuilder(
@@ -530,37 +511,46 @@ class MaskedSegyGather(Dataset):
 
 			# time augment
 			factor = 1.0
-			x, factor = self.time_aug.apply(
-				x,
-				rng_py=random,
-				prob=self.augment_time_prob,
-				range=self.augment_time_range,
-			)
+			if self.augment_time_prob > 0 and random.random() < self.augment_time_prob:
+				factor = random.uniform(*self.augment_time_range)
+				frac = Fraction(factor).limit_denominator(128)
+				up, down = frac.numerator, frac.denominator
+				H_tmp = x.shape[0]
+				x = np.stack(
+					[
+						resample_poly(x[h], up, down, padtype='line')
+						for h in range(H_tmp)
+					],
+					axis=0,
+				)
 
 			# fit/crop/pad time length
 			x, start = self._fit_time_len(x)
 
 			# space augment (and keep offsets in sync)
-			did_space, f_h = False, 1.0
-			x, off_subset, did_space, f_h = self.space_aug.apply(
-				x,
-				off_subset,
-				rng_py=random,
-				prob=self.augment_space_prob,
-				range=self.augment_space_range,
-			)
+			did_space = False
+			f_h = 1.0
+			if (
+				self.augment_space_prob > 0
+				and random.random() < self.augment_space_prob
+			):
+				f_h = random.uniform(*self.augment_space_range)
+				x = _spatial_stretch_sameH(x, f_h)
+				off_subset = _spatial_stretch_sameH(off_subset[:, None], f_h)[
+					:, 0
+				].astype(np.float32)
+				did_space = True
 
 			# freq augment
-			x = self.freq_aug.apply(
-				x,
-				rng_py=random,
-				prob=self.augment_freq_prob,
-				kinds=self.augment_freq_kinds,
-				band=self.augment_freq_band,
-				width=self.augment_freq_width,
-				roll=self.augment_freq_roll,
-				restandardize=self.augment_freq_restandardize,
-			)
+			if self.augment_freq_prob > 0 and random.random() < self.augment_freq_prob:
+				x = _apply_freq_augment(
+					x,
+					self.augment_freq_kinds,
+					self.augment_freq_band,
+					self.augment_freq_width,
+					self.augment_freq_roll,
+					self.augment_freq_restandardize,
+				)
 
 			# first-break indices in window
 			fb_idx_win = np.floor(fb_subset * factor).astype(np.int64) - start
