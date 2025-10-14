@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from hydra import compose, initialize
+from seisds import SegyGatherPipelineDataset
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
@@ -21,7 +22,6 @@ from proc.util import utils
 from proc.util.audit import audit_offsets_and_mask_coverage
 from proc.util.collate import segy_collate
 from proc.util.data_io import load_synth_pair
-from proc.util.dataset import MaskedSegyGather
 from proc.util.ema import ModelEMA
 from proc.util.eval import eval_synthe, val_one_epoch_snr
 from proc.util.loss import make_criterion, make_fb_seg_criterion
@@ -90,7 +90,7 @@ valid_segy_files, valid_fb_files = collect_field_files(
 	cfg.valid_field_list, cfg.data_root
 )
 
-train_dataset = MaskedSegyGather(
+train_dataset = SegyGatherPipelineDataset(
 	train_segy_files,
 	train_fb_files,
 	primary_keys=getattr(cfg.dataset, 'primary_keys', None),
@@ -126,7 +126,7 @@ train_dataset = MaskedSegyGather(
 )
 
 if task == 'fb_seg':
-	valid_dataset = MaskedSegyGather(
+	valid_dataset = SegyGatherPipelineDataset(
 		valid_segy_files,
 		valid_fb_files,
 		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
@@ -148,7 +148,7 @@ if task == 'fb_seg':
 		pick_ratio=cfg.dataset.pick_ratio,
 	)
 elif task == 'recon':
-	valid_dataset = MaskedSegyGather(
+	valid_dataset = SegyGatherPipelineDataset(
 		valid_segy_files,
 		valid_fb_files,
 		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),

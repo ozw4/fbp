@@ -36,10 +36,10 @@ from typing import Literal
 import torch
 from hydra import main
 from omegaconf import DictConfig, OmegaConf
+from seisds import SegyGatherPipelineDataset
 from torch.amp.autocast_mode import autocast
 from torch.utils.data import DataLoader, SequentialSampler
 
-from proc.util.dataset import MaskedSegyGather
 from proc.util.features import make_offset_channel
 from proc.util.model import NetAE, adjust_first_conv_padding
 from proc.util.model_utils import inflate_input_convs_to_2ch
@@ -427,7 +427,7 @@ def make_valid_loader_for_domain(
 	else:
 		raise ValueError(f'unknown domain: {domain}')
 
-	ds = MaskedSegyGather(
+	ds = SegyGatherPipelineDataset(
 		segy_files,
 		fb_files,
 		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
