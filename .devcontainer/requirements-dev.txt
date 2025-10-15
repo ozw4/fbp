@@ -35,4 +35,4 @@ websockets
 fastapi
 scikit-fmm
 monai
-seisds @ git+https://github.com/ozw4/seisds.git
+seisds @ git+https://github.com/ozw4/seisds.git@main
