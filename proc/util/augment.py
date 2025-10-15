@@ -14,6 +14,7 @@ __all__ = [
 	'_time_stretch_poly',
 ]
 
+
 def _time_stretch_poly(x_hw: np.ndarray, factor: float, target_len: int) -> np.ndarray:
 	"""Stretch (H,W) array in time and fit to target length."""
 	if abs(factor - 1.0) < 1e-4:
@@ -21,10 +22,11 @@ def _time_stretch_poly(x_hw: np.ndarray, factor: float, target_len: int) -> np.n
 	H, W = x_hw.shape
 	frac = Fraction(factor).limit_denominator(128)
 	up, down = frac.numerator, frac.denominator
-	y = np.stack([
-		resample_poly(x_hw[h], up, down, padtype='line') for h in range(H)
-	], axis=0)
+	y = np.stack(
+		[resample_poly(x_hw[h], up, down, padtype='line') for h in range(H)], axis=0
+	)
 	return _fit_time_len_np(y, target_len)
+
 
 def _fit_time_len_np(x_hw: np.ndarray, target_len: int) -> np.ndarray:
 	"""Trim or pad (H,W') to target_len along time axis."""
@@ -36,6 +38,7 @@ def _fit_time_len_np(x_hw: np.ndarray, target_len: int) -> np.ndarray:
 		return x_hw[:, start : start + target_len]
 	pad = target_len - W
 	return np.pad(x_hw, ((0, 0), (0, pad)), mode='constant')
+
 
 def _spatial_stretch_sameH(x_hw: np.ndarray, factor: float) -> np.ndarray:
 	"""Stretch traces spatially while keeping original count."""
@@ -51,6 +54,7 @@ def _spatial_stretch_sameH(x_hw: np.ndarray, factor: float) -> np.ndarray:
 		y = y[:H, :]
 	return y
 
+
 def _cosine_ramp(x: np.ndarray, a: float, b: float, invert: bool = False) -> np.ndarray:
 	"""Cosine ramp from 0 to 1 (or inverted) over [a, b]."""
 	if b <= a:
@@ -58,6 +62,7 @@ def _cosine_ramp(x: np.ndarray, a: float, b: float, invert: bool = False) -> np.
 	t = np.clip((x - a) / (b - a), 0.0, 1.0)
 	ramp = 0.5 - 0.5 * np.cos(np.pi * t)
 	return (1.0 - ramp) if invert else ramp
+
 
 def _make_freq_mask(
 	n_rfft: int,
@@ -89,6 +94,7 @@ def _make_freq_mask(
 	else:
 		raise ValueError(f'unknown freq-augment kind: {kind}')
 	return m.astype(np.float32)
+
 
 def _apply_freq_augment(
 	x_hw: np.ndarray,
