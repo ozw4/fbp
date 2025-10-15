@@ -3,12 +3,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from proc.util.features import make_offset_channel
-from proc.util.metrics import prepare_fb_windows, snr_improvement_from_cached_windows
-from proc.util.velocity_mask import make_velocity_feasible_mask
-from proc.util.vis import visualize_recon_triplet
-
+from .features import make_offset_channel
+from .metrics import prepare_fb_windows, snr_improvement_from_cached_windows
 from .predict import cover_all_traces_predict
+from .velocity_mask import make_velocity_feasible_mask
+from .vis import visualize_recon_triplet
 
 __all__ = [
 	'eval_synthe',
