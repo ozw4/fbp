@@ -17,13 +17,12 @@ from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampl
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from proc.eval import val_one_epoch_fbseg
 from proc.util import utils
 from proc.util.audit import audit_offsets_and_mask_coverage
 from proc.util.collate import segy_collate
 from proc.util.data_io import load_synth_pair
 from proc.util.ema import ModelEMA
-from proc.util.eval import eval_synthe, val_one_epoch_snr
+from proc.util.eval import eval_synthe, val_one_epoch_fbseg, val_one_epoch_snr
 from proc.util.loss import make_criterion, make_fb_seg_criterion
 from proc.util.model import NetAE, adjust_first_conv_padding
 from proc.util.model_utils import inflate_input_convs_to_2ch
