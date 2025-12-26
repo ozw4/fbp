@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from hydra import compose, initialize
-from seisds import SegyGatherPipelineDataset
+from seisai_dataset import SegyGatherPipelineDataset
 from torch.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
@@ -29,7 +29,12 @@ from proc.util.model_utils import inflate_input_convs_to_2ch
 from proc.util.predict import cover_all_traces_predict_chunked
 from proc.util.rng_util import worker_init_fn
 from proc.util.train_loop import train_one_epoch
-from proc.util.utils import WarmupCosineScheduler, collect_field_files, set_seed
+from proc.util.utils import (
+	WarmupCosineScheduler,
+	build_transform,
+	collect_field_files,
+	set_seed,
+)
 from proc.util.vis import visualize_pair_quartet
 
 
@@ -88,10 +93,13 @@ train_segy_files, train_fb_files = collect_field_files(
 valid_segy_files, valid_fb_files = collect_field_files(
 	cfg.valid_field_list, cfg.data_root
 )
+train_transform = build_transform(cfg, split='train')
+val_transform = build_transform(cfg, split='val')  # 標準化のみ
 
 train_dataset = SegyGatherPipelineDataset(
 	train_segy_files,
 	train_fb_files,
+	transform=train_transform,
 	primary_keys=getattr(cfg.dataset, 'primary_keys', None),
 	primary_key_weights=getattr(cfg.dataset, 'primary_key_weights', None),
 	use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
@@ -104,17 +112,6 @@ train_dataset = SegyGatherPipelineDataset(
 	mask_noise_std=cfg.dataset.mask_noise_std,
 	target_mode=cfg.dataset.target_mode,
 	label_sigma=cfg.dataset.label_sigma,
-	flip=cfg.dataset.flip,
-	augment_time_prob=cfg.dataset.augment.time.prob,
-	augment_time_range=tuple(cfg.dataset.augment.time.range),
-	augment_space_prob=cfg.dataset.augment.space.prob,
-	augment_space_range=tuple(cfg.dataset.augment.space.range),
-	augment_freq_prob=cfg.dataset.augment.freq.prob,
-	augment_freq_kinds=tuple(cfg.dataset.augment.freq.kinds),
-	augment_freq_band=tuple(cfg.dataset.augment.freq.band),
-	augment_freq_width=tuple(cfg.dataset.augment.freq.width),
-	augment_freq_roll=cfg.dataset.augment.freq.roll,
-	augment_freq_restandardize=cfg.dataset.augment.freq.restandardize,
 	reject_fblc=cfg.dataset.reject_fblc,
 	fblc_percentile=cfg.dataset.fblc_percentile,
 	fblc_thresh_ms=cfg.dataset.fblc_thresh_ms,
@@ -128,6 +125,7 @@ if task == 'fb_seg':
 	valid_dataset = SegyGatherPipelineDataset(
 		valid_segy_files,
 		valid_fb_files,
+		transform=val_transform,
 		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
 		header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
 		primary_keys=('ffid',),
@@ -138,10 +136,6 @@ if task == 'fb_seg':
 		mask_noise_std=0,
 		target_mode=cfg.dataset.target_mode,
 		label_sigma=cfg.dataset.label_sigma,
-		flip=False,
-		augment_time_prob=0.0,
-		augment_space_prob=0.0,
-		augment_freq_prob=0.0,
 		valid=True,
 		verbose=False,
 		pick_ratio=cfg.dataset.pick_ratio,
@@ -150,6 +144,7 @@ elif task == 'recon':
 	valid_dataset = SegyGatherPipelineDataset(
 		valid_segy_files,
 		valid_fb_files,
+		transform=val_transform,
 		use_header_cache=getattr(cfg.dataset, 'use_header_cache', False),
 		header_cache_dir=getattr(cfg.dataset, 'header_cache_dir', None),
 		primary_keys=('ffid',),
@@ -160,10 +155,6 @@ elif task == 'recon':
 		mask_noise_std=cfg.dataset.mask_noise_std,
 		target_mode=cfg.dataset.target_mode,
 		label_sigma=cfg.dataset.label_sigma,
-		flip=False,
-		augment_time_prob=0.0,
-		augment_space_prob=0.0,
-		augment_freq_prob=0.0,
 		reject_fblc=False,
 		valid=True,
 		pick_ratio=cfg.dataset.pick_ratio,

@@ -19,16 +19,28 @@
 import datetime
 import errno
 import itertools
-import math
 import os
 import random
 import time
 from collections import defaultdict, deque
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal, cast
 
 import numpy as np
 import torch
 import torch.distributed as dist
+from seisai_transforms.augment import (
+	DeterministicCropOrPad,
+	PerTraceStandardize,
+	RandomCropOrPad,
+	RandomFreqFilter,
+	RandomHFlip,
+	RandomSpatialStretchSameH,
+	RandomTimeStretch,
+	ViewCompose,
+)
+from seisai_transforms.config import FreqAugConfig, SpaceAugConfig, TimeAugConfig
 from torch import nn
 
 
@@ -76,30 +88,6 @@ def seed_worker(worker_id):
 	worker_seed = torch.initial_seed() % 2**32
 	np.random.seed(worker_seed)
 	random.seed(worker_seed)
-
-
-class WarmupCosineScheduler(torch.optim.lr_scheduler._LRScheduler):
-	def __init__(self, optimizer, warmup_steps, total_steps, eta_min=0, last_epoch=-1):
-		self.warmup_steps = warmup_steps
-		self.total_steps = total_steps
-		self.eta_min = eta_min
-		super().__init__(optimizer, last_epoch)
-
-	def get_lr(self):
-		step = self.last_epoch + 1
-		if step < self.warmup_steps:
-			return [base_lr * step / self.warmup_steps for base_lr in self.base_lrs]
-		if step <= self.total_steps:
-			decay_step = step - self.warmup_steps
-			decay_total = self.total_steps - self.warmup_steps
-			return [
-				self.eta_min
-				+ (base_lr - self.eta_min)
-				* 0.5
-				* (1 + math.cos(math.pi * decay_step / decay_total))
-				for base_lr in self.base_lrs
-			]
-		return [self.eta_min for _ in self.base_lrs]
 
 
 class SmoothedValue:
@@ -393,3 +381,86 @@ def cal_psnr(gt, data, max_value):
 	if mse == 0:
 		return 100
 	return 20 * np.log10(max_value / np.sqrt(mse))
+
+
+Pair = tuple[float, float]
+
+
+def _pair2(x: Sequence[float] | None, default: Pair) -> Pair:
+	if x is None:
+		return default
+	v = tuple(x)
+	if len(v) != 2:
+		raise ValueError(f'Expected length-2 pair, got len={len(v)}: {v}')
+	# 長さ2を確認したので、静的型に“確定”させる
+	return cast('Pair', (float(v[0]), float(v[1])))
+
+
+def _cfg_get(obj, path: str, default=None):
+	"""安全にネスト属性を取得する小ヘルパ: _cfg_get(cfg, "dataset.augment.time.prob", 0.0)"""
+	cur = obj
+	for key in path.split('.'):
+		cur = getattr(cur, key, None)
+		if cur is None:
+			return default
+	return cur
+
+
+def build_transform(
+	cfg,
+	split: Literal['train', 'val', 'test'] = 'train',
+	*,
+	hflip_prob: float | None = None,
+):
+	"""- split='train' → Rand系オーグメント+標準化
+	- split='val'/'test' → 標準化のみ
+	- hflip_prob を明示すれば cfg.dataset.flip を上書き可能
+	"""
+	if split in ('val', 'test'):
+		return ViewCompose(
+			[DeterministicCropOrPad(cfg.target_len), PerTraceStandardize()]
+		)
+
+	if hflip_prob is None:
+		hflip_prob = (
+			0.5 if getattr(getattr(cfg, 'dataset', object()), 'flip', False) else 0.0
+		)
+
+	space_cfg = SpaceAugConfig(
+		prob=_cfg_get(cfg, 'dataset.augment.space.prob', 0.0),
+		factor_range=_pair2(
+			_cfg_get(cfg, 'dataset.augment.space.range', None), (1.0, 1.0)
+		),
+	)
+
+	time_cfg = TimeAugConfig(
+		prob=_cfg_get(cfg, 'dataset.augment.time.prob', 0.0),
+		factor_range=_pair2(
+			_cfg_get(cfg, 'dataset.augment.time.range', None), (1.0, 1.0)
+		),
+		# 必要なら cfg から拾う: target_len=_cfg_get(cfg, "dataset.augment.time.target_len", None),
+	)
+
+	freq_cfg = FreqAugConfig(
+		prob=_cfg_get(cfg, 'dataset.augment.freq.prob', 0.0),
+		kinds=tuple(
+			_cfg_get(
+				cfg, 'dataset.augment.freq.kinds', ('bandpass', 'lowpass', 'highpass')
+			)
+		),
+		band=_pair2(_cfg_get(cfg, 'dataset.augment.freq.band', None), (0.05, 0.45)),
+		width=_pair2(_cfg_get(cfg, 'dataset.augment.freq.width', None), (0.10, 0.35)),
+		roll=float(_cfg_get(cfg, 'dataset.augment.freq.roll', 0.02)),
+		restandardize=bool(_cfg_get(cfg, 'dataset.augment.freq.restandardize', True)),
+	)
+
+	return ViewCompose(
+		[
+			RandomHFlip(prob=hflip_prob),
+			RandomSpatialStretchSameH(space_cfg),
+			RandomTimeStretch(time_cfg),
+			RandomFreqFilter(freq_cfg),
+			RandomCropOrPad(cfg.target_len),
+			PerTraceStandardize(),
+		]
+	)

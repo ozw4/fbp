@@ -390,7 +390,7 @@ class NetAE(nn.Module):
 		pre_feats = []
 		for b in self.pre_down:
 			x = b(x)
-			pre_feats.append(x[:, :1])
+			pre_feats.append(x)
 			if getattr(self, 'print_shapes', False):
 				print(f'[pre] {tuple(x.shape)}')
 
@@ -404,7 +404,10 @@ class NetAE(nn.Module):
 			feats = [top] + feats
 
 		# ★pre_down 出力を浅い側（末尾）に積む
-		feats = feats + pre_feats
+		feats = feats + pre_feats[::-1]
+		for feat in feats:
+			if getattr(self, 'print_shapes', False):
+				print(f'[feat] {tuple(feat.shape)}')
 
 		return feats
 
@@ -438,7 +441,6 @@ class NetAE(nn.Module):
 			return y
 
 		# eval 時のみ簡易 TTA（左右反転）
-
 		p1 = self._proc_flip(x)
 		p1 = F.interpolate(p1, size=(H, W), mode='bilinear', align_corners=False)
 		return torch.quantile(torch.stack([y, p1]), q=0.5, dim=0)
@@ -453,9 +455,9 @@ if __name__ == '__main__':
 	# pre_stages=1 で横方向のみ 1/4 に縮小
 
 	model = NetAE(
-		# backbone='caformer_b36.sail_in22k_ft_in1k',
+		backbone='caformer_b36.sail_in22k_ft_in1k',
 		# backbone='convnextv2_base.fcmae_ft_in22k_in1k_384',
-		backbone='edgenext_small.usi_in1k',
+		# backbone='edgenext_small.usi_in1k',
 		pretrained=True,
 		stage_strides=[(2, 4), (2, 2), (2, 4), (2, 2)],
 		pre_stages=2,

@@ -35,4 +35,8 @@ websockets
 fastapi
 scikit-fmm
 monai
-seisds @ git+https://github.com/ozw4/seisds.git@main
+seisai-transforms @ git+https://github.com/ozw4/seisai.git@chore/monorepo-workspace_noisedataset#subdirectory=packages/seisai-transforms
+seisai-dataset   @ git+https://github.com/ozw4/seisai.git@chore/monorepo-workspace_noisedataset#subdirectory=packages/seisai-dataset
+seisai-pick   @ git+https://github.com/ozw4/seisai.git@chore/monorepo-workspace_noisedataset#subdirectory=packages/seisai-pick
+seisai-engine   @ git+https://github.com/ozw4/seisai.git@chore/monorepo-workspace_noisedataset#subdirectory=packages/seisai-engine
+seisai-models   @ git+https://github.com/ozw4/seisai.git@chore/monorepo-workspace_noisedataset#subdirectory=packages/seisai-models

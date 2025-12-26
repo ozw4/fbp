@@ -46,6 +46,7 @@ num_block: 5
 print_freq: 100
 resume:  /workspace/proc/result/fb_seg/train_field_list_wotstkres_edgenext_small.usi_in1k_in1k_finetune_augspace01_modvelmask_veltrend_unfreeze/model_40.pth
 start_epoch: 0
+target_len: 6016
 
 # Freeze schedule
 freeze_epochs: 0
