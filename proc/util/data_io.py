@@ -6,6 +6,7 @@ import torch
 
 __all__ = ['_read_gather_by_indices', 'load_synth_pair']
 
+
 def _read_gather_by_indices(
 	f: segyio.SegyFile,
 	indices: np.ndarray,
@@ -26,6 +27,7 @@ def _read_gather_by_indices(
 		return np.empty((0, target_len), dtype=np.float32)
 	return np.stack(traces, axis=0)
 
+
 def load_synth_pair(
 	noisy_path: str,
 	clean_path: str,
@@ -44,12 +46,20 @@ def load_synth_pair(
 	gathers_offsets = []
 	H_list = []
 	with (
-		segyio.open(noisy_path, 'r', ignore_geometry=True, strict=False, endian=endian) as fn,
-		segyio.open(clean_path, 'r', ignore_geometry=True, strict=False, endian=endian) as fc,
+		segyio.open(
+			noisy_path, 'r', ignore_geometry=True, strict=False, endian=endian
+		) as fn,
+		segyio.open(
+			clean_path, 'r', ignore_geometry=True, strict=False, endian=endian
+		) as fc,
 	):
 		cdp_tr = np.asarray(fn.attributes(segyio.TraceField.CDP_TRACE)[:])
-		src_x_all = np.asarray(fn.attributes(segyio.TraceField.SourceX)[:], dtype=np.float32)
-		grp_x_all = np.asarray(fn.attributes(segyio.TraceField.GroupX)[:], dtype=np.float32)
+		src_x_all = np.asarray(
+			fn.attributes(segyio.TraceField.SourceX)[:], dtype=np.float32
+		)
+		grp_x_all = np.asarray(
+			fn.attributes(segyio.TraceField.GroupX)[:], dtype=np.float32
+		)
 		for ff in extract_key1idxs:
 			idx = np.where(cdp_tr == ff)[0]
 			g_noisy = _read_gather_by_indices(fn, idx, target_len=target_len)
